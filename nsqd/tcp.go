@@ -33,6 +33,8 @@ func (p *tcpServer) Handle(clientConn net.Conn) {
 	switch protocolMagic {
 	case "  V2":
 		prot = &protocolV2{ctx: p.ctx}
+	case "  DT":
+		prot = &protocolDT{ctx: p.ctx}
 	default:
 		protocol.SendFramedResponse(clientConn, frameTypeError, []byte("E_BAD_PROTOCOL"))
 		clientConn.Close()
