@@ -184,8 +184,10 @@ func (t *Topic) PutMessage(m *Message) error {
 	if err != nil {
 		return err
 	}
-	atomic.AddUint64(&t.messageCount, 1)
-	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
+	if isDt, _ := m.GetDt(); !isDt {
+		atomic.AddUint64(&t.messageCount, 1)
+		atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
+	}
 	return nil
 }
 
@@ -309,6 +311,7 @@ func (t *Topic) messagePump() {
 
 		for i, channel := range chans {
 			chanMsg := msg
+
 			// copy the message because each channel
 			// needs a unique instance but...
 			// fastpath to avoid copy if its the first channel
@@ -318,6 +321,38 @@ func (t *Topic) messagePump() {
 				chanMsg.Timestamp = msg.Timestamp
 				chanMsg.deferred = msg.deferred
 			}
+
+			if ok, dtStatus := chanMsg.GetDt(); ok {
+				switch dtStatus {
+				case PRE_STATUS:
+					var err error
+					if err = channel.HandleDtPreChannel(msg, time.Duration(15)*time.Minute); err != nil {
+						t.ctx.nsqd.logf(LOG_ERROR,
+							"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
+							t.name, msg.ID, channel.name, err)
+					}
+					chanMsg = nil
+				case COMMIT_STATUS:
+					chanMsg = channel.GetMsgByCmtMsg(chanMsg)
+				case CANCEL_STATUS:
+					var err error
+					if err = channel.CancelDtMsgByCnlMsg(chanMsg); err != nil {
+						t.ctx.nsqd.logf(LOG_ERROR,
+							"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
+							t.name, msg.ID, channel.name, err)
+					}
+					chanMsg = nil
+				default:
+					t.ctx.nsqd.logf(LOG_ERROR,
+						"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
+						t.name, msg.ID, channel.name, err)
+				}
+			}
+
+			if chanMsg == nil {
+				continue
+			}
+
 			if chanMsg.deferred != 0 {
 				channel.PutMessageDeferred(chanMsg, chanMsg.deferred)
 				continue

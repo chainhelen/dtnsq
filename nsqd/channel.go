@@ -68,6 +68,9 @@ type Channel struct {
 	inFlightMessages map[MessageID]*Message
 	inFlightPQ       inFlightPqueue
 	inFlightMutex    sync.Mutex
+	dtPreMessages    map[MessageID]*Message
+	dtPrePQ          dtPrePqueue
+	dtPreMutex       sync.Mutex
 }
 
 // NewChannel creates a new instance of the Channel type and returns a pointer
@@ -125,6 +128,11 @@ func (c *Channel) initPQ() {
 	c.inFlightMessages = make(map[MessageID]*Message)
 	c.inFlightPQ = newInFlightPqueue(pqSize)
 	c.inFlightMutex.Unlock()
+
+	c.dtPreMutex.Lock()
+	c.dtPreMessages = make(map[MessageID]*Message)
+	c.dtPrePQ = newDtPrePqueue(pqSize)
+	c.dtPreMutex.Unlock()
 
 	c.deferredMutex.Lock()
 	c.deferredMessages = make(map[MessageID]*pqueue.Item)
@@ -423,6 +431,43 @@ func (c *Channel) RemoveClient(clientID int64) {
 	}
 }
 
+// TODO
+func (c *Channel) HandleDtPreChannel(msg *Message, discardtimeout time.Duration) error {
+	now := time.Now()
+	msg.deliveryTS = now
+	msg.pri = now.Add(discardtimeout).UnixNano()
+	err := c.pushDtPreMessage(msg)
+	if err != nil {
+		return err
+	}
+	c.addToDtPrePQ(msg)
+	return nil
+}
+
+func (c *Channel) GetMsgByCmtMsg(cmtMsg *Message) *Message {
+	c.dtPreMutex.Unlock()
+	msg, _ := c.dtPreMessages[cmtMsg.DtPreMsgId]
+	c.dtPreMutex.Unlock()
+	return msg
+}
+
+func (c *Channel) CancelDtMsgByCnlMsg(cnlMsg *Message) error {
+	c.dtPreMutex.Unlock()
+	msg, _ := c.dtPreMessages[cnlMsg.DtPreMsgId]
+	if msg == nil {
+		c.dtPreMutex.Unlock()
+		return nil
+	}
+	c.dtPreMutex.Unlock()
+
+	_, err := c.popDtPreMessage(msg.ID)
+	if err != nil {
+		return err
+	}
+	c.removeFromDtPrePQ(msg)
+	return nil
+}
+
 func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout time.Duration) error {
 	now := time.Now()
 	msg.clientID = clientID
@@ -492,6 +537,49 @@ func (c *Channel) removeFromInFlightPQ(msg *Message) {
 	}
 	c.inFlightPQ.Remove(msg.index)
 	c.inFlightMutex.Unlock()
+}
+
+// pushDtPreMessage atomically adds a message to the dtpre dictionary
+func (c *Channel) pushDtPreMessage(msg *Message) error {
+	c.dtPreMutex.Lock()
+	_, ok := c.dtPreMessages[msg.ID]
+	if ok {
+		c.dtPreMutex.Unlock()
+		return errors.New("ID already in flight")
+	}
+	c.dtPreMessages[msg.ID] = msg
+	c.dtPreMutex.Unlock()
+	return nil
+}
+
+// popDtpreMessage atomically removes a message from the dtpre dictionary
+func (c *Channel) popDtPreMessage(id MessageID) (*Message, error) {
+	c.dtPreMutex.Lock()
+	msg, ok := c.dtPreMessages[id]
+	if !ok {
+		c.dtPreMutex.Unlock()
+		return nil, errors.New("ID not in flight")
+	}
+	delete(c.dtPreMessages, id)
+	c.dtPreMutex.Unlock()
+	return msg, nil
+}
+
+func (c *Channel) addToDtPrePQ(msg *Message) {
+	c.dtPreMutex.Lock()
+	c.dtPrePQ.Push(msg)
+	c.dtPreMutex.Unlock()
+}
+
+func (c *Channel) removeFromDtPrePQ(msg *Message) {
+	c.dtPreMutex.Lock()
+	if msg.index == -1 {
+		// this item has already been popped off the pqueue
+		c.dtPreMutex.Unlock()
+		return
+	}
+	c.dtPrePQ.Remove(msg.index)
+	c.dtPreMutex.Unlock()
 }
 
 func (c *Channel) pushDeferredMessage(item *pqueue.Item) error {

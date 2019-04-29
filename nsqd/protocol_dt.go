@@ -173,27 +173,31 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, err
 	}
 	switch {
-	case bytes.Equal(params[0], []byte("FIN")):
-		return p.FIN(client, params)
-	case bytes.Equal(params[0], []byte("RDY")):
-		return p.RDY(client, params)
-	case bytes.Equal(params[0], []byte("REQ")):
-		return p.REQ(client, params)
-	case bytes.Equal(params[0], []byte("PUB")):
-		return p.PUB(client, params)
-	case bytes.Equal(params[0], []byte("MPUB")):
-		return p.MPUB(client, params)
-	case bytes.Equal(params[0], []byte("DPUB")):
-		return p.DPUB(client, params)
-	case bytes.Equal(params[0], []byte("NOP")):
-		return p.NOP(client, params)
-	case bytes.Equal(params[0], []byte("TOUCH")):
-		return p.TOUCH(client, params)
-	case bytes.Equal(params[0], []byte("SUB")):
-		return p.SUB(client, params)
-	case bytes.Equal(params[0], []byte("CLS")):
-		return p.CLS(client, params)
-	case bytes.Equal(params[0], []byte("AUTH")):
+	// case bytes.Equal(params[0], []byte("FIN")):
+	// 	return p.FIN(client, params)
+	// case bytes.Equal(params[0], []byte("RDY")):
+	// 	return p.RDY(client, params)
+	// case bytes.Equal(params[0], []byte("REQ")):
+	// 	return p.REQ(client, params)
+	case bytes.Equal(params[0], []byte("PUBPRE")):
+		return p.PUBPRE(client, params)
+	case bytes.Equal(params[0], []byte("PUBCMT")):
+		return p.PUBCMT(client, params)
+	case bytes.Equal(params[0], []byte("PUBCNC")):
+		return p.PUBCNL(client, params)
+		// case bytes.Equal(params[0], []byte("MPUB")):
+		// 	return p.MPUB(client, params)
+		// case bytes.Equal(params[0], []byte("DPUB")):
+		// 	return p.DPUB(client, params)
+		// case bytes.Equal(params[0], []byte("NOP")):
+		// 	return p.NOP(client, params)
+		// case bytes.Equal(params[0], []byte("TOUCH")):
+		// 	return p.TOUCH(client, params)
+		// case bytes.Equal(params[0], []byte("SUB")):
+		// 	return p.SUB(client, params)
+		// case bytes.Equal(params[0], []byte("CLS")):
+		// 	return p.CLS(client, params)
+		// case bytes.Equal(params[0], []byte("AUTH")):
 		return p.AUTH(client, params)
 	}
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
@@ -322,6 +326,7 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
 			}
+
 			msg.Attempts++
 
 			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)
@@ -758,6 +763,159 @@ func (p *protocolDT) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 
 func (p *protocolDT) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
+}
+
+func (p *protocolDT) PUBPRE(client *clientV2, params [][]byte) ([]byte, error) {
+	var err error
+
+	if len(params) < 2 {
+		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "PUBPRE insufficient number of parameters")
+	}
+
+	topicName := string(params[1])
+	if !protocol.IsValidTopicName(topicName) {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
+			fmt.Sprintf("PUBPRE topic name %q is not valid", topicName))
+	}
+
+	bodyLen, err := readLen(client.Reader, client.lenSlice)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUBPRE failed to read message body size")
+	}
+
+	if bodyLen <= 0 {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_MESSAGE",
+			fmt.Sprintf("PUBPRE invalid message body size %d", bodyLen))
+	}
+
+	if int64(bodyLen) > p.ctx.nsqd.getOpts().MaxMsgSize {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_MESSAGE",
+			fmt.Sprintf("PUBPRE message too big %d > %d", bodyLen, p.ctx.nsqd.getOpts().MaxMsgSize))
+	}
+
+	messageBody := make([]byte, bodyLen)
+	_, err = io.ReadFull(client.Reader, messageBody)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUBPRE failed to read message body")
+	}
+
+	if err := p.CheckAuth(client, "PUBPRE", topicName, ""); err != nil {
+		return nil, err
+	}
+
+	topic := p.ctx.nsqd.GetTopic(topicName)
+	msg := NewMessage(topic.GenerateID(), messageBody)
+	msg.SetDt(PRE_STATUS)
+	err = topic.PutMessage(msg)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
+	}
+
+	client.PublishedMessage(topicName, 1)
+
+	return okBytes, nil
+}
+
+func (p *protocolDT) PUBCMT(client *clientV2, params [][]byte) ([]byte, error) {
+	var err error
+
+	if len(params) < 2 {
+		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "PUBCMT insufficient number of parameters")
+	}
+
+	topicName := string(params[1])
+	if !protocol.IsValidTopicName(topicName) {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
+			fmt.Sprintf("PUBCMT topic name %q is not valid", topicName))
+	}
+
+	bodyLen, err := readLen(client.Reader, client.lenSlice)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUBCMT failed to read message body size")
+	}
+
+	if bodyLen <= 0 {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_MESSAGE",
+			fmt.Sprintf("PUBCMT invalid message body size %d", bodyLen))
+	}
+
+	if int64(bodyLen) > p.ctx.nsqd.getOpts().MaxMsgSize {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_MESSAGE",
+			fmt.Sprintf("PUBCMT message too big %d > %d", bodyLen, p.ctx.nsqd.getOpts().MaxMsgSize))
+	}
+
+	messageBody := make([]byte, bodyLen)
+	_, err = io.ReadFull(client.Reader, messageBody)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUBCMT failed to read message body")
+	}
+
+	if err := p.CheckAuth(client, "PUBCMT", topicName, ""); err != nil {
+		return nil, err
+	}
+
+	topic := p.ctx.nsqd.GetTopic(topicName)
+	msg := NewMessage(topic.GenerateID(), messageBody)
+	msg.SetDt(COMMIT_STATUS)
+	err = topic.PutMessage(msg)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
+	}
+
+	client.PublishedMessage(topicName, 1)
+
+	return okBytes, nil
+}
+
+func (p *protocolDT) PUBCNL(client *clientV2, params [][]byte) ([]byte, error) {
+	var err error
+
+	if len(params) < 2 {
+		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "PUBCNL insufficient number of parameters")
+	}
+
+	topicName := string(params[1])
+	if !protocol.IsValidTopicName(topicName) {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
+			fmt.Sprintf("PUBCNL topic name %q is not valid", topicName))
+	}
+
+	bodyLen, err := readLen(client.Reader, client.lenSlice)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUBCNL failed to read message body size")
+	}
+
+	if bodyLen <= 0 {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_MESSAGE",
+			fmt.Sprintf("PUBCNL invalid message body size %d", bodyLen))
+	}
+
+	if int64(bodyLen) > p.ctx.nsqd.getOpts().MaxMsgSize {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_MESSAGE",
+			fmt.Sprintf("PUBCNL message too big %d > %d", bodyLen, p.ctx.nsqd.getOpts().MaxMsgSize))
+	}
+
+	messageBody := make([]byte, bodyLen)
+	_, err = io.ReadFull(client.Reader, messageBody)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUBCNL failed to read message body")
+	}
+
+	if err := p.CheckAuth(client, "PUBCNL", topicName, ""); err != nil {
+		return nil, err
+	}
+
+	topic := p.ctx.nsqd.GetTopic(topicName)
+	msg := NewMessage(topic.GenerateID(), messageBody)
+	msg.SetDt(CANCEL_STATUS)
+	err = topic.PutMessage(msg)
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
+	}
+
+	client.PublishedMessage(topicName, 1)
+
+	return okBytes, nil
 }
 
 func (p *protocolDT) PUB(client *clientV2, params [][]byte) ([]byte, error) {

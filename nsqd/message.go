@@ -15,6 +15,15 @@ const (
 
 type MessageID [MsgIDLength]byte
 
+const (
+	UNKONW_STATUS = MessageDtType(0)
+	PRE_STATUS    = MessageDtType(1)
+	CANCEL_STATUS = MessageDtType(2)
+	COMMIT_STATUS = MessageDtType(3)
+)
+
+type MessageDtType int
+
 type Message struct {
 	ID        MessageID
 	Body      []byte
@@ -27,6 +36,11 @@ type Message struct {
 	pri        int64
 	index      int
 	deferred   time.Duration
+
+	// for dt
+	isDt       bool
+	dtStatus   MessageDtType
+	DtPreMsgId MessageID
 }
 
 func NewMessage(id MessageID, body []byte) *Message {
@@ -35,6 +49,17 @@ func NewMessage(id MessageID, body []byte) *Message {
 		Body:      body,
 		Timestamp: time.Now().UnixNano(),
 	}
+}
+
+// TODO mutex?
+func (m *Message) SetDt(dtStatus MessageDtType) {
+	m.isDt = true
+	m.dtStatus = dtStatus
+}
+
+// TODO mutex?
+func (m *Message) GetDt() (bool, MessageDtType) {
+	return m.isDt, m.dtStatus
 }
 
 func (m *Message) WriteTo(w io.Writer) (int64, error) {
