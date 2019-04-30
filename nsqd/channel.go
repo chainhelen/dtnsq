@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chainhelen/dtnsq/internal/lg"
+	"github.com/chainhelen/dtnsq/internal/pqueue"
+	"github.com/chainhelen/dtnsq/internal/quantile"
 	"github.com/nsqio/go-diskqueue"
-	"github.com/nsqio/nsq/internal/lg"
-	"github.com/nsqio/nsq/internal/pqueue"
-	"github.com/nsqio/nsq/internal/quantile"
 )
 
 type Consumer interface {

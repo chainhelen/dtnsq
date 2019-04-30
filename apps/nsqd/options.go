@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nsqio/nsq/internal/app"
-	"github.com/nsqio/nsq/nsqd"
+	"github.com/chainhelen/dtnsq/internal/app"
+	"github.com/chainhelen/dtnsq/nsqd"
 )
 
 type tlsRequiredOption int

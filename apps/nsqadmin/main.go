@@ -9,12 +9,12 @@ import (
 	"syscall"
 
 	"github.com/BurntSushi/toml"
+	"github.com/chainhelen/dtnsq/internal/app"
+	"github.com/chainhelen/dtnsq/internal/lg"
+	"github.com/chainhelen/dtnsq/internal/version"
+	"github.com/chainhelen/dtnsq/nsqadmin"
 	"github.com/judwhite/go-svc/svc"
 	"github.com/mreiferson/go-options"
-	"github.com/nsqio/nsq/internal/app"
-	"github.com/nsqio/nsq/internal/lg"
-	"github.com/nsqio/nsq/internal/version"
-	"github.com/nsqio/nsq/nsqadmin"
 )
 
 func nsqadminFlagSet(opts *nsqadmin.Options) *flag.FlagSet {

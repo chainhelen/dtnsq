@@ -13,8 +13,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/nsqio/nsq/internal/protocol"
-	"github.com/nsqio/nsq/internal/version"
+	"github.com/chainhelen/dtnsq/internal/protocol"
+	"github.com/chainhelen/dtnsq/internal/version"
 )
 
 // const maxTimeout = time.Hour
