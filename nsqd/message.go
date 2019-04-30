@@ -40,7 +40,7 @@ type Message struct {
 	// for dt
 	isDt       bool
 	dtStatus   MessageDtType
-	DtPreMsgId MessageID
+	dtPreMsgId MessageID
 }
 
 func NewMessage(id MessageID, body []byte) *Message {
@@ -52,14 +52,24 @@ func NewMessage(id MessageID, body []byte) *Message {
 }
 
 // TODO mutex?
-func (m *Message) SetDt(dtStatus MessageDtType) {
+func (m *Message) SetDtStatus(dtStatus MessageDtType) {
 	m.isDt = true
 	m.dtStatus = dtStatus
 }
 
 // TODO mutex?
-func (m *Message) GetDt() (bool, MessageDtType) {
+func (m *Message) GetDtStatus() (bool, MessageDtType) {
 	return m.isDt, m.dtStatus
+}
+
+func (m *Message) ExtractPreMsgIdFromCmtMsgBody(body []byte) {
+	var h MessageID
+	copy(h[:], body[0:MsgIDLength])
+	m.dtPreMsgId = h
+}
+
+func (m *Message) GetDtPreMsgId() MessageID {
+	return m.dtPreMsgId
 }
 
 func (m *Message) WriteTo(w io.Writer) (int64, error) {

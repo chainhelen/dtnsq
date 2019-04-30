@@ -184,7 +184,7 @@ func (t *Topic) PutMessage(m *Message) error {
 	if err != nil {
 		return err
 	}
-	if isDt, _ := m.GetDt(); !isDt {
+	if isDt, _ := m.GetDtStatus(); !isDt {
 		atomic.AddUint64(&t.messageCount, 1)
 		atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
 	}
@@ -322,7 +322,7 @@ func (t *Topic) messagePump() {
 				chanMsg.deferred = msg.deferred
 			}
 
-			if ok, dtStatus := chanMsg.GetDt(); ok {
+			if ok, dtStatus := chanMsg.GetDtStatus(); ok {
 				switch dtStatus {
 				case PRE_STATUS:
 					var err error

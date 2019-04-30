@@ -805,7 +805,7 @@ func (p *protocolDT) PUBPRE(client *clientV2, params [][]byte) ([]byte, error) {
 
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	msg.SetDt(PRE_STATUS)
+	msg.SetDtStatus(PRE_STATUS)
 	err = topic.PutMessage(msg)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
@@ -813,7 +813,7 @@ func (p *protocolDT) PUBPRE(client *clientV2, params [][]byte) ([]byte, error) {
 
 	client.PublishedMessage(topicName, 1)
 
-	return okBytes, nil
+	return msg.ID[:], nil
 }
 
 func (p *protocolDT) PUBCMT(client *clientV2, params [][]byte) ([]byte, error) {
@@ -856,7 +856,8 @@ func (p *protocolDT) PUBCMT(client *clientV2, params [][]byte) ([]byte, error) {
 
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	msg.SetDt(COMMIT_STATUS)
+	msg.ExtractPreMsgIdFromCmtMsgBody(messageBody)
+	msg.SetDtStatus(COMMIT_STATUS)
 	err = topic.PutMessage(msg)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
@@ -907,7 +908,8 @@ func (p *protocolDT) PUBCNL(client *clientV2, params [][]byte) ([]byte, error) {
 
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	msg.SetDt(CANCEL_STATUS)
+	msg.ExtractPreMsgIdFromCmtMsgBody(messageBody)
+	msg.SetDtStatus(CANCEL_STATUS)
 	err = topic.PutMessage(msg)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())

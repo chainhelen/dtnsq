@@ -445,15 +445,15 @@ func (c *Channel) HandleDtPreChannel(msg *Message, discardtimeout time.Duration)
 }
 
 func (c *Channel) GetMsgByCmtMsg(cmtMsg *Message) *Message {
-	c.dtPreMutex.Unlock()
-	msg, _ := c.dtPreMessages[cmtMsg.DtPreMsgId]
+	c.dtPreMutex.Lock()
+	msg, _ := c.dtPreMessages[cmtMsg.GetDtPreMsgId()]
 	c.dtPreMutex.Unlock()
 	return msg
 }
 
 func (c *Channel) CancelDtMsgByCnlMsg(cnlMsg *Message) error {
 	c.dtPreMutex.Unlock()
-	msg, _ := c.dtPreMessages[cnlMsg.DtPreMsgId]
+	msg, _ := c.dtPreMessages[cnlMsg.GetDtPreMsgId()]
 	if msg == nil {
 		c.dtPreMutex.Unlock()
 		return nil
