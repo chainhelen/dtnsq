@@ -87,7 +87,38 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 	router.Handle("PUT", "/debug/setblockrate", http_api.Decorate(setBlockRateHandler, log, http_api.PlainText))
 	router.Handler("GET", "/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
 
+	// dt debug list, don't use api in production env because it affect performance.
+	router.Handle("GET", "/topic/list", http_api.Decorate(s.topicListHandler, log, http_api.DtJSON))
+	router.Handle("GET", "/channel/list", http_api.Decorate(s.channelListHandler, log, http_api.DtJSON))
+	router.Handle("GET", "/premsg/list", http_api.Decorate(s.preMsgListHandler, log, http_api.DtJSON))
+
 	return s
+}
+
+func (s *httpServer) topicListHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) (interface{}, error) {
+	return s.ctx.nsqd.TopicList(), nil
+}
+
+func (s *httpServer) channelListHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) (interface{}, error) {
+	r.ParseForm()
+	topicNameArr := r.Form["topic"]
+	if len(topicNameArr) != 1 {
+		return nil, http_api.Err{http.StatusBadRequest, fmt.Sprintf("invalid topicname")}
+	}
+	return s.ctx.nsqd.ChannelList(topicNameArr[0]), nil
+}
+
+func (s *httpServer) preMsgListHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) (interface{}, error) {
+	r.ParseForm()
+	topicNameArr := r.Form["topic"]
+	if len(topicNameArr) != 1 {
+		return nil, http_api.Err{http.StatusBadRequest, fmt.Sprintf("invalid topicname")}
+	}
+	channelNameArr := r.Form["channel"]
+	if len(channelNameArr) != 1 {
+		return nil, http_api.Err{http.StatusBadRequest, fmt.Sprintf("invalid channelname")}
+	}
+	return s.ctx.nsqd.preMsgListMost10Item(topicNameArr[0], channelNameArr[0]), nil
 }
 
 func setBlockRateHandler(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {

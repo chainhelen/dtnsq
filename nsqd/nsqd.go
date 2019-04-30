@@ -241,6 +241,53 @@ func (n *NSQD) RemoveClient(clientID int64) {
 	n.clientLock.Unlock()
 }
 
+func (n *NSQD) TopicList() string {
+	var topicNames []string
+	n.RLock()
+	for i, _ := range n.topicMap {
+		topicNames = append(topicNames, i)
+	}
+	n.RUnlock()
+	return fmt.Sprintf("%s\n", topicNames)
+}
+
+func (n *NSQD) ChannelList(topicName string) string {
+	var channelNames []string
+	n.RLock()
+	t := n.GetTopic(topicName)
+	if t == nil {
+		return "[]\n"
+	}
+	for i, _ := range t.channelMap {
+		channelNames = append(channelNames, i)
+	}
+	n.RUnlock()
+	return fmt.Sprintf("%s\n", channelNames)
+}
+
+func (n *NSQD) preMsgListMost10Item(topicName string, channelName string) string {
+	n.RLock()
+	t := n.GetTopic(topicName)
+	if t == nil {
+		return "[]\n"
+	}
+	c := t.GetChannel(channelName)
+	if c == nil {
+		return "[]\n"
+	}
+	arr := c.ListMost10Item()
+	n.RUnlock()
+	if arr == nil || 0 == len(arr) {
+		return "[]\n"
+	}
+	str := "[\n"
+	for _, v := range arr {
+		str += fmt.Sprintf("\tID:%s, BODY:%s\n", v.ID, v.Body)
+	}
+	str += "]\n"
+	return str
+}
+
 func (n *NSQD) Main() error {
 	ctx := &context{n}
 

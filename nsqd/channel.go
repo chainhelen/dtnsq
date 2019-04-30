@@ -452,7 +452,7 @@ func (c *Channel) GetMsgByCmtMsg(cmtMsg *Message) *Message {
 }
 
 func (c *Channel) CancelDtMsgByCnlMsg(cnlMsg *Message) error {
-	c.dtPreMutex.Unlock()
+	c.dtPreMutex.Lock()
 	msg, _ := c.dtPreMessages[cnlMsg.GetDtPreMsgId()]
 	if msg == nil {
 		c.dtPreMutex.Unlock()
@@ -580,6 +580,13 @@ func (c *Channel) removeFromDtPrePQ(msg *Message) {
 	}
 	c.dtPrePQ.Remove(msg.index)
 	c.dtPreMutex.Unlock()
+}
+
+func (c *Channel) ListMost10Item() []*Message {
+	c.dtPreMutex.Lock()
+	arr := c.dtPrePQ.ListMost10Item()
+	c.dtPreMutex.Unlock()
+	return arr
 }
 
 func (c *Channel) pushDeferredMessage(item *pqueue.Item) error {

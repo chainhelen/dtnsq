@@ -97,3 +97,15 @@ func (pq *dtPrePqueue) down(i, n int) {
 		i = j
 	}
 }
+
+func (pq *dtPrePqueue) ListMost10Item() []*Message {
+	var MessageArr []*Message
+	for i := 0; i < len(*pq) && i < 10; i++ {
+		if curMsg := (*pq)[i]; curMsg == nil {
+			return MessageArr
+		} else {
+			MessageArr = append(MessageArr, curMsg)
+		}
+	}
+	return MessageArr
+}

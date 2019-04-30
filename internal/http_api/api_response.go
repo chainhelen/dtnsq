@@ -54,6 +54,32 @@ func PlainText(f APIHandler) APIHandler {
 	}
 }
 
+func DtJSON(f APIHandler) APIHandler {
+	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
+		code := 200
+		data, err := f(w, req, ps)
+		if err != nil {
+			code = err.(Err).Code
+			data = err.Error()
+		}
+		switch d := data.(type) {
+		case string:
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("X-NSQ-Content-Type", "nsq; version=dt")
+			w.WriteHeader(code)
+			io.WriteString(w, d)
+		case []byte:
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("X-NSQ-Content-Type", "nsq; version=dt")
+			w.WriteHeader(code)
+			w.Write(d)
+		default:
+			panic(fmt.Sprintf("unknown response type %T", data))
+		}
+		return nil, nil
+	}
+}
+
 func V1(f APIHandler) APIHandler {
 	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 		data, err := f(w, req, ps)
