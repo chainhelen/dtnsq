@@ -39,6 +39,9 @@ type Topic struct {
 	paused    int32
 	pauseChan chan int
 
+	// for dt
+	clients map[int64]*clientV2
+
 	ctx *context
 }
 
@@ -51,6 +54,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		startChan:         make(chan int, 1),
 		exitChan:          make(chan int),
 		channelUpdateChan: make(chan int),
+		clients:           make(map[int64]*clientV2),
 		ctx:               ctx,
 		paused:            0,
 		pauseChan:         make(chan int),
@@ -326,7 +330,7 @@ func (t *Topic) messagePump() {
 				switch dtStatus {
 				case PRE_STATUS:
 					var err error
-					if err = channel.HandleDtPreChannel(msg, time.Duration(15)*time.Minute); err != nil {
+					if err = channel.HandleDtPreChannel(msg, time.Duration(10)*time.Second); err != nil {
 						t.ctx.nsqd.logf(LOG_ERROR,
 							"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
 							t.name, msg.ID, channel.name, err)
@@ -523,4 +527,48 @@ retry:
 		goto retry
 	}
 	return id.Hex()
+}
+
+func (t *Topic) AddClient(clientID int64, client *clientV2) error {
+	t.Lock()
+	defer t.Unlock()
+	_, ok := t.clients[clientID]
+	if ok {
+		return nil
+	}
+	// maxTopicClients := c.ctx.nsqd.getOpts().MaxTopicClients
+	// todo
+	maxTopicClients := 100
+	if maxTopicClients != 0 && len(t.clients) >= maxTopicClients {
+		return errors.New("E_TOO_MANY_TOPIC_DTPRODUCER")
+	}
+	t.clients[clientID] = client
+	client.DtTopic[t.name] = t
+	return nil
+}
+
+func (t *Topic) RemoveClient(clientID int64) {
+	t.Lock()
+	defer t.Unlock()
+
+	cli, ok := t.clients[clientID]
+	if !ok {
+		return
+	}
+	delete(t.clients, clientID)
+	delete(cli.DtTopic, t.name)
+}
+
+func (t *Topic) CheckBack(m *Message) {
+	t.RLock()
+	defer t.RUnlock()
+
+	t.put(m)
+
+	for _, cli := range t.clients {
+		//select {
+		t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s): before send checkBack send cli[%s]", t.name, cli)
+		cli.clientCheckBackChan <- m
+		t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s): after send checkBack send cli[%s]", t.name, cli)
+	}
 }

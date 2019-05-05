@@ -671,6 +671,9 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 			if c.processDeferredQueue(now) {
 				dirty = true
 			}
+			if c.processDtPreQueue(now) {
+				dirty = true
+			}
 			responseCh <- dirty
 		case <-closeCh:
 			return

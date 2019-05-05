@@ -118,6 +118,12 @@ func (p *protocolDT) IOLoop(conn net.Conn) error {
 		client.Channel.RemoveClient(client.ID)
 	}
 
+	for _, t := range client.DtTopic {
+		if t != nil {
+			t.RemoveClient(client.ID)
+		}
+	}
+
 	p.ctx.nsqd.RemoveClient(client.ID)
 	return err
 }
@@ -189,8 +195,8 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		// 	return p.MPUB(client, params)
 		// case bytes.Equal(params[0], []byte("DPUB")):
 		// 	return p.DPUB(client, params)
-		// case bytes.Equal(params[0], []byte("NOP")):
-		// 	return p.NOP(client, params)
+	case bytes.Equal(params[0], []byte("NOP")):
+		return p.NOP(client, params)
 		// case bytes.Equal(params[0], []byte("TOUCH")):
 		// 	return p.TOUCH(client, params)
 		// case bytes.Equal(params[0], []byte("SUB")):
@@ -336,17 +342,23 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 				goto exit
 			}
 			flushed = false
+		case msg := <-client.clientCheckBackChan:
+			p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(DT): [%s] receive checkBack body:%s", client, msg.Body)
+			err = p.SendMessage(client, msg)
+			if err != nil {
+				goto exit
+			}
 		case <-client.ExitChan:
 			goto exit
 		}
 	}
 
 exit:
-	p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] exiting messagePump", client)
+	p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(DT): [%s] exiting messagePump", client)
 	heartbeatTicker.Stop()
 	outputBufferTicker.Stop()
 	if err != nil {
-		p.ctx.nsqd.logf(LOG_ERROR, "PROTOCOL(V2): [%s] messagePump error - %s", client, err)
+		p.ctx.nsqd.logf(LOG_ERROR, "PROTOCOL(DT): [%s] messagePump error - %s", client, err)
 	}
 }
 
@@ -385,7 +397,7 @@ func (p *protocolDT) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_BODY", "IDENTIFY failed to decode JSON body")
 	}
 
-	p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %+v", client, identifyData)
+	p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(DT): [%s] %+v", client, identifyData)
 
 	err = client.Identify(identifyData)
 	if err != nil {
@@ -451,7 +463,7 @@ func (p *protocolDT) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 	}
 
 	if tlsv1 {
-		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] upgrading connection to TLS", client)
+		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(DT): [%s] upgrading connection to TLS", client)
 		err = client.UpgradeTLS()
 		if err != nil {
 			return nil, protocol.NewFatalClientErr(err, "E_IDENTIFY_FAILED", "IDENTIFY failed "+err.Error())
@@ -464,7 +476,7 @@ func (p *protocolDT) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 	}
 
 	if snappy {
-		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] upgrading connection to snappy", client)
+		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(DT): [%s] upgrading connection to snappy", client)
 		err = client.UpgradeSnappy()
 		if err != nil {
 			return nil, protocol.NewFatalClientErr(err, "E_IDENTIFY_FAILED", "IDENTIFY failed "+err.Error())
@@ -477,7 +489,7 @@ func (p *protocolDT) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 	}
 
 	if deflate {
-		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] upgrading connection to deflate (level %d)", client, deflateLevel)
+		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(DT): [%s] upgrading connection to deflate (level %d)", client, deflateLevel)
 		err = client.UpgradeDeflate(deflateLevel)
 		if err != nil {
 			return nil, protocol.NewFatalClientErr(err, "E_IDENTIFY_FAILED", "IDENTIFY failed "+err.Error())
@@ -532,7 +544,7 @@ func (p *protocolDT) AUTH(client *clientV2, params [][]byte) ([]byte, error) {
 
 	if err := client.Auth(string(body)); err != nil {
 		// we don't want to leak errors contacting the auth server to untrusted clients
-		p.ctx.nsqd.logf(LOG_WARN, "PROTOCOL(V2): [%s] AUTH failed %s", client, err)
+		p.ctx.nsqd.logf(LOG_WARN, "PROTOCOL(DT): [%s] AUTH failed %s", client, err)
 		return nil, protocol.NewFatalClientErr(err, "E_AUTH_FAILED", "AUTH failed")
 	}
 
@@ -573,7 +585,7 @@ func (p *protocolDT) CheckAuth(client *clientV2, cmd, topicName, channelName str
 		ok, err := client.IsAuthorized(topicName, channelName)
 		if err != nil {
 			// we don't want to leak errors contacting the auth server to untrusted clients
-			p.ctx.nsqd.logf(LOG_WARN, "PROTOCOL(V2): [%s] AUTH failed %s", client, err)
+			p.ctx.nsqd.logf(LOG_WARN, "PROTOCOL(DT): [%s] AUTH failed %s", client, err)
 			return protocol.NewFatalClientErr(nil, "E_AUTH_FAILED", "AUTH failed")
 		}
 		if !ok {
@@ -647,7 +659,7 @@ func (p *protocolDT) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 	if state == stateClosing {
 		// just ignore ready changes on a closing channel
 		p.ctx.nsqd.logf(LOG_INFO,
-			"PROTOCOL(V2): [%s] ignoring RDY after CLS in state ClientStateV2Closing",
+			"PROTOCOL(DT): [%s] ignoring RDY after CLS in state ClientStateV2Closing",
 			client)
 		return nil, nil
 	}
@@ -735,7 +747,7 @@ func (p *protocolDT) REQ(client *clientV2, params [][]byte) ([]byte, error) {
 		clampedTimeout = maxReqTimeout
 	}
 	if clampedTimeout != timeoutDuration {
-		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] REQ timeout %d out of range 0-%d. Setting to %d",
+		p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(DT): [%s] REQ timeout %d out of range 0-%d. Setting to %d",
 			client, timeoutDuration, maxReqTimeout, clampedTimeout)
 		timeoutDuration = clampedTimeout
 	}
@@ -804,6 +816,12 @@ func (p *protocolDT) PUBPRE(client *clientV2, params [][]byte) ([]byte, error) {
 	}
 
 	topic := p.ctx.nsqd.GetTopic(topicName)
+
+	if err := topic.AddClient(client.ID, client); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_TOPIC_DTPRODUCER",
+			fmt.Sprintf("dt producer for %s exceeds limit of %d",
+				topicName, 100))
+	}
 	msg := NewMessage(topic.GenerateID(), messageBody)
 	msg.SetDtStatus(PRE_STATUS)
 	err = topic.PutMessage(msg)

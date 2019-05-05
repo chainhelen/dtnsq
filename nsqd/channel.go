@@ -481,6 +481,19 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	return nil
 }
 
+//func (c *Channel) StartPreDtMsgTimeout(msg *Message, clientID int64, timeout time.Duration) error {
+//	now := time.Now()
+//	// msg.clientID = clientID
+//	msg.deliveryTS = now
+//	msg.pri = now.Add(timeout).UnixNano()
+//	err := c.pushDtPreMessage(msg)
+//	if err != nil {
+//		return err
+//	}
+//	c.addToDtPrePQ(msg)
+//	return nil
+//}
+
 func (c *Channel) StartDeferredTimeout(msg *Message, timeout time.Duration) error {
 	absTs := time.Now().Add(timeout).UnixNano()
 	item := &pqueue.Item{Value: msg, Priority: absTs}
@@ -545,7 +558,7 @@ func (c *Channel) pushDtPreMessage(msg *Message) error {
 	_, ok := c.dtPreMessages[msg.ID]
 	if ok {
 		c.dtPreMutex.Unlock()
-		return errors.New("ID already in flight")
+		return errors.New("ID already in dtpre")
 	}
 	c.dtPreMessages[msg.ID] = msg
 	c.dtPreMutex.Unlock()
@@ -558,7 +571,7 @@ func (c *Channel) popDtPreMessage(id MessageID) (*Message, error) {
 	msg, ok := c.dtPreMessages[id]
 	if !ok {
 		c.dtPreMutex.Unlock()
-		return nil, errors.New("ID not in flight")
+		return nil, errors.New("ID not in dtpre")
 	}
 	delete(c.dtPreMessages, id)
 	c.dtPreMutex.Unlock()
@@ -684,6 +697,46 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 			client.TimedOutMessage()
 		}
 		c.put(msg)
+	}
+
+exit:
+	return dirty
+}
+
+func (c *Channel) processDtPreQueue(t int64) bool {
+	c.exitMutex.RLock()
+	defer c.exitMutex.RUnlock()
+
+	if c.Exiting() {
+		return false
+	}
+
+	dirty := false
+	for {
+		c.dtPreMutex.Lock()
+		msg, _ := c.dtPrePQ.PeekAndShift(t)
+		c.dtPreMutex.Unlock()
+
+		// c.ctx.nsqd.logf(LOG_ERROR, "processDtPreQueue %s", msg)
+
+		if msg == nil {
+			goto exit
+		}
+		dirty = true
+
+		_, err := c.popDtPreMessage(msg.ID)
+		if err != nil {
+			goto exit
+		}
+
+		// c.put(msg)
+		if t := c.ctx.nsqd.GetTopic(c.topicName); t == nil {
+			c.ctx.nsqd.logf(LOG_ERROR, "processDtPreQueue can't find topicName for topic:%s", c.topicName)
+			goto exit
+		} else {
+			c.ctx.nsqd.logf(LOG_ERROR, "processDtPreQueue %s;t%s", msg, t)
+			t.CheckBack(msg)
+		}
 	}
 
 exit:
