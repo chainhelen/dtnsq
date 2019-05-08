@@ -1,4 +1,4 @@
-module github.com/nsqio/nsq
+module github.com/chainhelen/dtnsq
 
 require (
 	github.com/BurntSushi/toml v0.3.1
