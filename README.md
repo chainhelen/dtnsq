@@ -14,7 +14,7 @@ Add feature: add distributed trasaction.
 -----
 
 #### orignal project   
-[**nsq**](github.com/nsqio/nsq) is a realtime distributed messaging platform designed to operate at scale, handling
+[**nsq**](https://github.com/nsqio/nsq) is a realtime distributed messaging platform designed to operate at scale, handling
 billions of messages per day.
 
 
