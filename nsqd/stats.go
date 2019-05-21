@@ -22,10 +22,11 @@ type TopicStats struct {
 
 func NewTopicStats(t *Topic, channels []ChannelStats) TopicStats {
 	return TopicStats{
-		TopicName:    t.name,
-		Channels:     channels,
-		Depth:        t.Depth(),
-		BackendDepth: t.backend.Depth(),
+		TopicName: t.name,
+		Channels:  channels,
+		// TODO
+		//Depth:        t.Depth(),
+		//BackendDepth: t.backend.Depth(),
 		MessageCount: atomic.LoadUint64(&t.messageCount),
 		MessageBytes: atomic.LoadUint64(&t.messageBytes),
 		Paused:       t.IsPaused(),

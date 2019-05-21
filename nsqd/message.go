@@ -37,6 +37,10 @@ type Message struct {
 	index      int
 	deferred   time.Duration
 
+	//for backend queue
+	Offset        int64
+	queueCntIndex int64
+
 	// for dt
 	isDt       bool
 	dtStatus   MessageDtType
@@ -125,11 +129,12 @@ func decodeMessage(b []byte) (*Message, error) {
 	return &msg, nil
 }
 
-func writeMessageToBackend(buf *bytes.Buffer, msg *Message, bq BackendQueue) error {
+func writeMessageToBackend(buf *bytes.Buffer, msg *Message, put func(x []byte) (int64, int64, error)) error {
 	buf.Reset()
 	_, err := msg.WriteTo(buf)
 	if err != nil {
 		return err
 	}
-	return bq.Put(buf.Bytes())
+	_, _, err = put(buf.Bytes())
+	return err
 }

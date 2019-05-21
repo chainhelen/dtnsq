@@ -185,6 +185,8 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	// 	return p.RDY(client, params)
 	// case bytes.Equal(params[0], []byte("REQ")):
 	// 	return p.REQ(client, params)
+	case bytes.Equal(params[0], []byte("PUB")):
+		return p.PUB(client, params)
 	case bytes.Equal(params[0], []byte("PUBPRE")):
 		return p.PUBPRE(client, params)
 	case bytes.Equal(params[0], []byte("PUBCMT")):
@@ -211,8 +213,7 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 
 func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 	var err error
-	var memoryMsgChan chan *Message
-	var backendMsgChan chan []byte
+	var clientMsgChan chan *Message
 	var subChannel *Channel
 	// NOTE: `flusherChan` is used to bound message latency for
 	// the pathological case of a channel on a low volume topic
@@ -242,8 +243,7 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 	for {
 		if subChannel == nil || !client.IsReadyForMessages() {
 			// the client is not ready to receive messages...
-			memoryMsgChan = nil
-			backendMsgChan = nil
+			clientMsgChan = nil
 			flusherChan = nil
 			// force flush
 			client.writeLock.Lock()
@@ -256,14 +256,12 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 		} else if flushed {
 			// last iteration we flushed...
 			// do not select on the flusher ticker channel
-			memoryMsgChan = subChannel.memoryMsgChan
-			backendMsgChan = subChannel.backend.ReadChan()
+			clientMsgChan = subChannel.clientMsgChan
 			flusherChan = nil
 		} else {
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
-			memoryMsgChan = subChannel.memoryMsgChan
-			backendMsgChan = subChannel.backend.ReadChan()
+			clientMsgChan = subChannel.clientMsgChan
 			flusherChan = outputBufferTicker.C
 		}
 
@@ -309,33 +307,14 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 			if err != nil {
 				goto exit
 			}
-		case b := <-backendMsgChan:
-			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
-				continue
-			}
-
-			msg, err := decodeMessage(b)
-			if err != nil {
-				p.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
-				continue
-			}
-			msg.Attempts++
-
-			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)
-			client.SendingMessage()
-			err = p.SendMessage(client, msg)
-			if err != nil {
-				goto exit
-			}
-			flushed = false
-		case msg := <-memoryMsgChan:
+		case msg := <-clientMsgChan:
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
 			}
 
 			msg.Attempts++
-
 			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)
+
 			client.SendingMessage()
 			err = p.SendMessage(client, msg)
 			if err != nil {

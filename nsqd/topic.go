@@ -1,17 +1,15 @@
 package nsqd
 
 import (
-	"bytes"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/chainhelen/dtnsq/internal/lg"
 	"github.com/chainhelen/dtnsq/internal/quantile"
 	"github.com/chainhelen/dtnsq/internal/util"
-	"github.com/nsqio/go-diskqueue"
 )
 
 type Topic struct {
@@ -22,9 +20,9 @@ type Topic struct {
 	sync.RWMutex
 
 	name              string
+	fullName          string
 	channelMap        map[string]*Channel
-	backend           BackendQueue
-	memoryMsgChan     chan *Message
+	backend           BackendQueueWriter
 	startChan         chan int
 	exitChan          chan int
 	channelUpdateChan chan int
@@ -42,6 +40,10 @@ type Topic struct {
 	// for dt
 	clients map[int64]*clientV2
 
+	dtPreMessages map[MessageID]*Message
+	dtPrePQ       dtPrePqueue
+	dtPreMutex    sync.Mutex
+
 	ctx *context
 }
 
@@ -50,7 +52,6 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	t := &Topic{
 		name:              topicName,
 		channelMap:        make(map[string]*Channel),
-		memoryMsgChan:     make(chan *Message, ctx.nsqd.getOpts().MemQueueSize),
 		startChan:         make(chan int, 1),
 		exitChan:          make(chan int),
 		channelUpdateChan: make(chan int),
@@ -64,29 +65,38 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 
 	if strings.HasSuffix(topicName, "#ephemeral") {
 		t.ephemeral = true
-		t.backend = newDummyBackendQueue()
+		t.backend = newDummyBackendQueueWriter()
 	} else {
-		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
-			opts := ctx.nsqd.getOpts()
-			lg.Logf(opts.Logger, opts.LogLevel, lg.LogLevel(level), f, args...)
-		}
-		t.backend = diskqueue.New(
-			topicName,
+		backendName := getTopicBackendName(topicName, int(0))
+		queue, err := NewDiskQueueWriter(backendName,
 			ctx.nsqd.getOpts().DataPath,
 			ctx.nsqd.getOpts().MaxBytesPerFile,
 			int32(minValidMsgLength),
 			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength,
-			ctx.nsqd.getOpts().SyncEvery,
-			ctx.nsqd.getOpts().SyncTimeout,
-			dqLogf,
-		)
-	}
+			ctx,
+			ctx.nsqd.getOpts().SyncEvery)
 
-	t.waitGroup.Wrap(t.messagePump)
+		t.fullName = GetTopicFullName(topicName, int(0))
+
+		if err != nil {
+			t.ctx.nsqd.logf(LOG_ERROR, "topic(%v) failed to init disk queue: %v ", t.fullName, err)
+			if err == ErrNeedFixQueueStart {
+				// t.SetDataFixState(true)
+			} else {
+				return nil
+			}
+		}
+
+		t.backend = queue
+	}
 
 	t.ctx.nsqd.Notify(t)
 
 	return t
+}
+
+func GetTopicFullName(topic string, part int) string {
+	return topic + "-" + strconv.Itoa(part)
 }
 
 func (t *Topic) Start() {
@@ -127,7 +137,8 @@ func (t *Topic) getOrCreateChannel(channelName string) (*Channel, bool) {
 		deleteCallback := func(c *Channel) {
 			t.DeleteExistingChannel(c.name)
 		}
-		channel = NewChannel(t.name, channelName, t.ctx, deleteCallback)
+		readEnd := t.backend.GetQueueReadStart()
+		channel = NewChannel(t.name, channelName, readEnd, t.ctx, deleteCallback)
 		t.channelMap[channelName] = channel
 		t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): new channel(%s)", t.name, channel.name)
 		return channel, true
@@ -178,6 +189,7 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 }
 
 // PutMessage writes a Message to the queue
+
 func (t *Topic) PutMessage(m *Message) error {
 	t.RLock()
 	defer t.RUnlock()
@@ -188,10 +200,9 @@ func (t *Topic) PutMessage(m *Message) error {
 	if err != nil {
 		return err
 	}
-	if isDt, _ := m.GetDtStatus(); !isDt {
-		atomic.AddUint64(&t.messageCount, 1)
-		atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
-	}
+	atomic.AddUint64(&t.messageCount, 1)
+	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
+
 	return nil
 }
 
@@ -220,158 +231,28 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 	return nil
 }
 
-func (t *Topic) put(m *Message) error {
-	select {
-	case t.memoryMsgChan <- m:
-	default:
-		b := bufferPoolGet()
-		err := writeMessageToBackend(b, m, t.backend)
-		bufferPoolPut(b)
-		t.ctx.nsqd.SetHealth(err)
-		if err != nil {
-			t.ctx.nsqd.logf(LOG_ERROR,
-				"TOPIC(%s) ERROR: failed to write message to backend - %s",
-				t.name, err)
-			return err
-		}
+func (t *Topic) Flush() error {
+	//TODO channel
+	t.Lock()
+	if err := t.backend.Flush(); err != nil {
+		t.Unlock()
+		return err
 	}
+	t.Unlock()
 	return nil
 }
 
-func (t *Topic) Depth() int64 {
-	return int64(len(t.memoryMsgChan)) + t.backend.Depth()
-}
-
-// messagePump selects over the in-memory and backend queue and
-// writes messages to every channel for this topic
-func (t *Topic) messagePump() {
-	var msg *Message
-	var buf []byte
-	var err error
-	var chans []*Channel
-	var memoryMsgChan chan *Message
-	var backendChan chan []byte
-
-	// do not pass messages before Start(), but avoid blocking Pause() or GetChannel()
-	for {
-		select {
-		case <-t.channelUpdateChan:
-			continue
-		case <-t.pauseChan:
-			continue
-		case <-t.exitChan:
-			goto exit
-		case <-t.startChan:
-		}
-		break
+func (t *Topic) put(m *Message) error {
+	b := bufferPoolGet()
+	err := writeMessageToBackend(b, m, t.backend.Put)
+	bufferPoolPut(b)
+	t.ctx.nsqd.SetHealth(err)
+	if err != nil {
+		t.ctx.nsqd.logf(LOG_ERROR,
+			"TOPIC(%s) ERROR: failed to write message to backend - %s",
+			t.name, err)
 	}
-	t.RLock()
-	for _, c := range t.channelMap {
-		chans = append(chans, c)
-	}
-	t.RUnlock()
-	if len(chans) > 0 && !t.IsPaused() {
-		memoryMsgChan = t.memoryMsgChan
-		backendChan = t.backend.ReadChan()
-	}
-
-	// main message loop
-	for {
-		select {
-		case msg = <-memoryMsgChan:
-		case buf = <-backendChan:
-			msg, err = decodeMessage(buf)
-			if err != nil {
-				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
-				continue
-			}
-		case <-t.channelUpdateChan:
-			chans = chans[:0]
-			t.RLock()
-			for _, c := range t.channelMap {
-				chans = append(chans, c)
-			}
-			t.RUnlock()
-			if len(chans) == 0 || t.IsPaused() {
-				memoryMsgChan = nil
-				backendChan = nil
-			} else {
-				memoryMsgChan = t.memoryMsgChan
-				backendChan = t.backend.ReadChan()
-			}
-			continue
-		case <-t.pauseChan:
-			if len(chans) == 0 || t.IsPaused() {
-				memoryMsgChan = nil
-				backendChan = nil
-			} else {
-				memoryMsgChan = t.memoryMsgChan
-				backendChan = t.backend.ReadChan()
-			}
-			continue
-		case <-t.exitChan:
-			goto exit
-		}
-
-		for i, channel := range chans {
-			chanMsg := msg
-
-			// copy the message because each channel
-			// needs a unique instance but...
-			// fastpath to avoid copy if its the first channel
-			// (the topic already created the first copy)
-			if i > 0 {
-				chanMsg = NewMessage(msg.ID, msg.Body)
-				chanMsg.Timestamp = msg.Timestamp
-				chanMsg.deferred = msg.deferred
-			}
-
-			if ok, dtStatus := chanMsg.GetDtStatus(); ok {
-				switch dtStatus {
-				case PRE_STATUS:
-					var err error
-					if err = channel.HandleDtPreChannel(msg, time.Duration(10)*time.Second); err != nil {
-						t.ctx.nsqd.logf(LOG_ERROR,
-							"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
-							t.name, msg.ID, channel.name, err)
-					}
-					chanMsg = nil
-				case COMMIT_STATUS:
-					chanMsg = channel.GetMsgByCmtMsg(chanMsg)
-				case CANCEL_STATUS:
-					var err error
-					if err = channel.CancelDtMsgByCnlMsg(chanMsg); err != nil {
-						t.ctx.nsqd.logf(LOG_ERROR,
-							"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
-							t.name, msg.ID, channel.name, err)
-					}
-					chanMsg = nil
-				default:
-					t.ctx.nsqd.logf(LOG_ERROR,
-						"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
-						t.name, msg.ID, channel.name, err)
-				}
-			}
-
-			if chanMsg == nil {
-				continue
-			}
-
-			if chanMsg.deferred != 0 {
-				channel.PutMessageDeferred(chanMsg, chanMsg.deferred)
-				continue
-			}
-			err := channel.PutMessage(chanMsg)
-			if err != nil {
-				t.ctx.nsqd.logf(LOG_ERROR,
-					"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
-					t.name, msg.ID, channel.name, err)
-			}
-		}
-	}
-
-exit:
-	t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): closing ... messagePump", t.name)
+	return err
 }
 
 // Delete empties the topic and all its channels and closes
@@ -427,47 +308,11 @@ func (t *Topic) exit(deleted bool) error {
 	}
 
 	// write anything leftover to disk
-	t.flush()
 	return t.backend.Close()
 }
 
 func (t *Topic) Empty() error {
-	for {
-		select {
-		case <-t.memoryMsgChan:
-		default:
-			goto finish
-		}
-	}
-
-finish:
 	return t.backend.Empty()
-}
-
-func (t *Topic) flush() error {
-	var msgBuf bytes.Buffer
-
-	if len(t.memoryMsgChan) > 0 {
-		t.ctx.nsqd.logf(LOG_INFO,
-			"TOPIC(%s): flushing %d memory messages to backend",
-			t.name, len(t.memoryMsgChan))
-	}
-
-	for {
-		select {
-		case msg := <-t.memoryMsgChan:
-			err := writeMessageToBackend(&msgBuf, msg, t.backend)
-			if err != nil {
-				t.ctx.nsqd.logf(LOG_ERROR,
-					"ERROR: failed to write message to backend - %s", err)
-			}
-		default:
-			goto finish
-		}
-	}
-
-finish:
-	return nil
 }
 
 func (t *Topic) AggregateChannelE2eProcessingLatency() *quantile.Quantile {
@@ -571,4 +416,103 @@ func (t *Topic) CheckBack(m *Message) {
 		cli.clientCheckBackChan <- m
 		t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s): after send checkBack send cli[%s]", t.name, cli)
 	}
+}
+
+func (t *Topic) addToDtPrePQ(msg *Message) {
+	t.dtPreMutex.Lock()
+	t.dtPrePQ.Push(msg)
+	t.dtPreMutex.Unlock()
+}
+
+// pushDtPreMessage atomically adds a message to the dtpre dictionary
+func (t *Topic) pushDtPreMessage(msg *Message) error {
+	t.dtPreMutex.Lock()
+	_, ok := t.dtPreMessages[msg.ID]
+	if ok {
+		t.dtPreMutex.Unlock()
+		return errors.New("ID already in dtpre")
+	}
+	t.dtPreMessages[msg.ID] = msg
+	t.dtPreMutex.Unlock()
+	return nil
+}
+
+func (t *Topic) GetMsgByCmtMsg(cmtMsg *Message) *Message {
+	t.dtPreMutex.Lock()
+	msg, _ := t.dtPreMessages[cmtMsg.GetDtPreMsgId()]
+	t.dtPreMutex.Unlock()
+	return msg
+}
+
+func (t *Topic) removeFromDtPrePQ(msg *Message) {
+	t.dtPreMutex.Lock()
+	if msg.index == -1 {
+		// this item has already been popped off the pqueue
+		t.dtPreMutex.Unlock()
+		return
+	}
+	t.dtPrePQ.Remove(msg.index)
+	t.dtPreMutex.Unlock()
+}
+
+func (t *Topic) removeDtMsg(cnlMsg *Message) error {
+	t.dtPreMutex.Lock()
+	msg, _ := t.dtPreMessages[cnlMsg.GetDtPreMsgId()]
+	if msg == nil {
+		t.dtPreMutex.Unlock()
+		return nil
+	}
+	t.dtPreMutex.Unlock()
+
+	_, err := t.popDtPreMessage(msg.ID)
+	if err != nil {
+		return err
+	}
+	t.removeFromDtPrePQ(msg)
+	return nil
+}
+
+// popDtpreMessage atomically removes a message from the dtpre dictionary
+func (t *Topic) popDtPreMessage(id MessageID) (*Message, error) {
+	t.dtPreMutex.Lock()
+	msg, ok := t.dtPreMessages[id]
+	if !ok {
+		t.dtPreMutex.Unlock()
+		return nil, errors.New("ID not in dtpre")
+	}
+	delete(t.dtPreMessages, id)
+	t.dtPreMutex.Unlock()
+	return msg, nil
+}
+
+func (t *Topic) processDtPreQueue(now int64) bool {
+	t.RLock()
+	defer t.RUnlock()
+
+	if t.Exiting() {
+		return false
+	}
+
+	dirty := false
+	for {
+		t.dtPreMutex.Lock()
+		msg, _ := t.dtPrePQ.PeekAndShift(now)
+		t.dtPreMutex.Unlock()
+
+		if msg == nil {
+			goto exit
+		}
+		dirty = true
+
+		_, err := t.popDtPreMessage(msg.ID)
+		if err != nil {
+			goto exit
+		}
+
+		t.ctx.nsqd.logf(LOG_DEBUG, "processDtPreQueue %s;t%s", msg, t)
+		t.CheckBack(msg)
+	}
+
+exit:
+	return dirty
 }

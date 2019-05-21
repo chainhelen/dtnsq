@@ -10,10 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chainhelen/dtnsq/internal/lg"
 	"github.com/chainhelen/dtnsq/internal/pqueue"
 	"github.com/chainhelen/dtnsq/internal/quantile"
-	"github.com/nsqio/go-diskqueue"
 )
 
 type Consumer interface {
@@ -45,9 +43,11 @@ type Channel struct {
 	name      string
 	ctx       *context
 
-	backend BackendQueue
+	backend BackendQueueReader
 
-	memoryMsgChan chan *Message
+	//memoryMsgChan chan *Message
+	clientMsgChan chan *Message
+	exitChan      chan int
 	exitFlag      int32
 	exitMutex     sync.RWMutex
 
@@ -74,13 +74,13 @@ type Channel struct {
 }
 
 // NewChannel creates a new instance of the Channel type and returns a pointer
-func NewChannel(topicName string, channelName string, ctx *context,
-	deleteCallback func(*Channel)) *Channel {
+func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
+	ctx *context, deleteCallback func(*Channel)) *Channel {
 
 	c := &Channel{
 		topicName:      topicName,
 		name:           channelName,
-		memoryMsgChan:  make(chan *Message, ctx.nsqd.getOpts().MemQueueSize),
+		clientMsgChan:  make(chan *Message, ctx.nsqd.getOpts().MemQueueSize),
 		clients:        make(map[int64]Consumer),
 		deleteCallback: deleteCallback,
 		ctx:            ctx,
@@ -96,29 +96,67 @@ func NewChannel(topicName string, channelName string, ctx *context,
 
 	if strings.HasSuffix(channelName, "#ephemeral") {
 		c.ephemeral = true
-		c.backend = newDummyBackendQueue()
+		c.backend = newDummyBackendQueueReader()
 	} else {
-		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
-			opts := ctx.nsqd.getOpts()
-			lg.Logf(opts.Logger, opts.LogLevel, lg.LogLevel(level), f, args...)
-		}
 		// backend names, for uniqueness, automatically include the topic...
-		backendName := getBackendName(topicName, channelName)
-		c.backend = diskqueue.New(
-			backendName,
+		// TODO
+		backendReaderName := getBackendReaderName(c.topicName, 0, channelName)
+		backendWriterName := getBackendWriterName(c.topicName, 0)
+
+		c.backend = newDiskQueueReader(
+			backendWriterName,
+			backendReaderName,
 			ctx.nsqd.getOpts().DataPath,
 			ctx.nsqd.getOpts().MaxBytesPerFile,
 			int32(minValidMsgLength),
 			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength,
+			ctx,
 			ctx.nsqd.getOpts().SyncEvery,
 			ctx.nsqd.getOpts().SyncTimeout,
-			dqLogf,
+			chEnd,
 		)
 	}
+
+	go c.messagePump()
 
 	c.ctx.nsqd.Notify(c)
 
 	return c
+}
+
+func (c *Channel) messagePump() {
+	var readChan <-chan *ReadResult
+
+LOOP:
+	for {
+		if atomic.LoadInt32(&c.exitFlag) == 1 {
+			goto exit
+		}
+		if c.IsPaused() {
+
+		}
+		select {
+		case <-c.exitChan:
+			goto exit
+		case data := <-readChan:
+			if data.Err != nil {
+				c.ctx.nsqd.logf(LOG_ERROR, "channel (%v): failed to read message - %s", c.name, data.Err)
+				time.Sleep(time.Millisecond * 100)
+				continue LOOP
+			}
+			msg, err := decodeMessage(data.Data)
+			if err != nil {
+				c.ctx.nsqd.logf(LOG_ERROR, "channel (%v): failed to read message - %s", c.name, data.Err)
+				time.Sleep(time.Millisecond * 100)
+				continue LOOP
+			}
+			msg.Offset = data.Offset
+			msg.queueCntIndex = data.CurCnt
+
+			c.clientMsgChan <- msg
+		}
+	}
+exit:
 }
 
 func (c *Channel) initPQ() {
@@ -202,7 +240,7 @@ func (c *Channel) Empty() error {
 
 	for {
 		select {
-		case <-c.memoryMsgChan:
+		//case <-c.memoryMsgChan:
 		default:
 			goto finish
 		}
@@ -217,18 +255,18 @@ finish:
 func (c *Channel) flush() error {
 	var msgBuf bytes.Buffer
 
-	if len(c.memoryMsgChan) > 0 || len(c.inFlightMessages) > 0 || len(c.deferredMessages) > 0 {
-		c.ctx.nsqd.logf(LOG_INFO, "CHANNEL(%s): flushing %d memory %d in-flight %d deferred messages to backend",
-			c.name, len(c.memoryMsgChan), len(c.inFlightMessages), len(c.deferredMessages))
-	}
+	//if len(c.memoryMsgChan) > 0 || len(c.inFlightMessages) > 0 || len(c.deferredMessages) > 0 {
+	//	c.ctx.nsqd.logf(LOG_INFO, "CHANNEL(%s): flushing %d memory %d in-flight %d deferred messages to backend",
+	//		c.name, len(c.memoryMsgChan), len(c.inFlightMessages), len(c.deferredMessages))
+	//}
 
 	for {
 		select {
-		case msg := <-c.memoryMsgChan:
-			err := writeMessageToBackend(&msgBuf, msg, c.backend)
-			if err != nil {
-				c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
-			}
+		//case msg := <-c.memoryMsgChan:
+		//	err := writeMessageToBackend(&msgBuf, msg, c.backend)
+		//	if err != nil {
+		////		c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
+		//	}
 		default:
 			goto finish
 		}
@@ -237,7 +275,7 @@ func (c *Channel) flush() error {
 finish:
 	c.inFlightMutex.Lock()
 	for _, msg := range c.inFlightMessages {
-		err := writeMessageToBackend(&msgBuf, msg, c.backend)
+		err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
 		if err != nil {
 			c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
 		}
@@ -247,7 +285,7 @@ finish:
 	c.deferredMutex.Lock()
 	for _, item := range c.deferredMessages {
 		msg := item.Value.(*Message)
-		err := writeMessageToBackend(&msgBuf, msg, c.backend)
+		err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
 		if err != nil {
 			c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
 		}
@@ -258,7 +296,7 @@ finish:
 }
 
 func (c *Channel) Depth() int64 {
-	return int64(len(c.memoryMsgChan)) + c.backend.Depth()
+	return int64(len(c.clientMsgChan)) + c.backend.Depth()
 }
 
 func (c *Channel) Pause() error {
@@ -309,8 +347,8 @@ func (c *Channel) PutMessage(m *Message) error {
 
 func (c *Channel) put(m *Message) error {
 	select {
-	case c.memoryMsgChan <- m:
-	default:
+	case c.clientMsgChan <- m:
+		/*default:
 		b := bufferPoolGet()
 		err := writeMessageToBackend(b, m, c.backend)
 		bufferPoolPut(b)
@@ -319,7 +357,7 @@ func (c *Channel) put(m *Message) error {
 			c.ctx.nsqd.logf(LOG_ERROR, "CHANNEL(%s): failed to write message to backend - %s",
 				c.name, err)
 			return err
-		}
+		}*/
 	}
 	return nil
 }
@@ -431,7 +469,7 @@ func (c *Channel) RemoveClient(clientID int64) {
 	}
 }
 
-// TODO
+// TODO dtnsq
 func (c *Channel) HandleDtPreChannel(msg *Message, discardtimeout time.Duration) error {
 	now := time.Now()
 	msg.deliveryTS = now
@@ -441,30 +479,6 @@ func (c *Channel) HandleDtPreChannel(msg *Message, discardtimeout time.Duration)
 		return err
 	}
 	c.addToDtPrePQ(msg)
-	return nil
-}
-
-func (c *Channel) GetMsgByCmtMsg(cmtMsg *Message) *Message {
-	c.dtPreMutex.Lock()
-	msg, _ := c.dtPreMessages[cmtMsg.GetDtPreMsgId()]
-	c.dtPreMutex.Unlock()
-	return msg
-}
-
-func (c *Channel) CancelDtMsgByCnlMsg(cnlMsg *Message) error {
-	c.dtPreMutex.Lock()
-	msg, _ := c.dtPreMessages[cnlMsg.GetDtPreMsgId()]
-	if msg == nil {
-		c.dtPreMutex.Unlock()
-		return nil
-	}
-	c.dtPreMutex.Unlock()
-
-	_, err := c.popDtPreMessage(msg.ID)
-	if err != nil {
-		return err
-	}
-	c.removeFromDtPrePQ(msg)
 	return nil
 }
 
@@ -581,17 +595,6 @@ func (c *Channel) popDtPreMessage(id MessageID) (*Message, error) {
 func (c *Channel) addToDtPrePQ(msg *Message) {
 	c.dtPreMutex.Lock()
 	c.dtPrePQ.Push(msg)
-	c.dtPreMutex.Unlock()
-}
-
-func (c *Channel) removeFromDtPrePQ(msg *Message) {
-	c.dtPreMutex.Lock()
-	if msg.index == -1 {
-		// this item has already been popped off the pqueue
-		c.dtPreMutex.Unlock()
-		return
-	}
-	c.dtPrePQ.Remove(msg.index)
 	c.dtPreMutex.Unlock()
 }
 

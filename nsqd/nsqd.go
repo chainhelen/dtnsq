@@ -395,7 +395,8 @@ func (n *NSQD) LoadMetadata() error {
 		if t.Paused {
 			topic.Pause()
 		}
-		for _, c := range t.Channels {
+
+		/*for _, c := range t.Channels {
 			if !protocol.IsValidChannelName(c.Name) {
 				n.logf(LOG_WARN, "skipping creation of invalid channel %s", c.Name)
 				continue
@@ -404,7 +405,7 @@ func (n *NSQD) LoadMetadata() error {
 			if c.Paused {
 				channel.Pause()
 			}
-		}
+		}*/
 		topic.Start()
 	}
 	return nil
@@ -550,7 +551,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	}
 
 	// now that all channels are added, start topic messagePump
-	t.Start()
+	// t.Start()
 	return t
 }
 
@@ -632,8 +633,8 @@ func (n *NSQD) channels() []*Channel {
 // resizePool adjusts the size of the pool of queueScanWorker goroutines
 //
 // 	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
-//
-func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, closeCh chan int) {
+// TODO dtnsq, maybe the strategy of resizePool should be changed.
+func (n *NSQD) resizePool(workTopicCh chan *Topic, num int, workChannelCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	idealPoolSize := int(float64(num) * 0.25)
 	if idealPoolSize < 1 {
 		idealPoolSize = 1
@@ -650,7 +651,7 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 		} else {
 			// expand
 			n.waitGroup.Wrap(func() {
-				n.queueScanWorker(workCh, responseCh, closeCh)
+				n.queueScanWorker(workTopicCh, workChannelCh, responseCh, closeCh)
 			})
 			n.poolSize++
 		}
@@ -659,10 +660,13 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 
 // queueScanWorker receives work (in the form of a channel) from queueScanLoop
 // and processes the deferred and in-flight queues
-func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, closeCh chan int) {
+func (n *NSQD) queueScanWorker(workTopicCh chan *Topic, workChannelCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	for {
 		select {
-		case c := <-workCh:
+		case t := <-workTopicCh:
+			now := time.Now().Unix()
+			t.processDtPreQueue(now)
+		case c := <-workChannelCh:
 			now := time.Now().UnixNano()
 			dirty := false
 			if c.processInFlightQueue(now) {
@@ -695,15 +699,17 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 // If QueueScanDirtyPercent (default: 25%) of the selected channels were dirty,
 // the loop continues without sleep.
 func (n *NSQD) queueScanLoop() {
-	workCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)
+	workChannelCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)
+	workTopicCh := make(chan *Topic, n.getOpts().QueueScanSelectionCount)
 	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount)
 	closeCh := make(chan int)
 
 	workTicker := time.NewTicker(n.getOpts().QueueScanInterval)
 	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval)
+	flushTicker := time.NewTicker(n.getOpts().SyncTimeout)
 
 	channels := n.channels()
-	n.resizePool(len(channels), workCh, responseCh, closeCh)
+	n.resizePool(workTopicCh, len(channels), workChannelCh, responseCh, closeCh)
 
 	for {
 		select {
@@ -713,7 +719,10 @@ func (n *NSQD) queueScanLoop() {
 			}
 		case <-refreshTicker.C:
 			channels = n.channels()
-			n.resizePool(len(channels), workCh, responseCh, closeCh)
+			n.resizePool(workTopicCh, len(channels), workChannelCh, responseCh, closeCh)
+			continue
+		case <-flushTicker.C:
+			n.flushAll()
 			continue
 		case <-n.exitChan:
 			goto exit
@@ -724,9 +733,9 @@ func (n *NSQD) queueScanLoop() {
 			num = len(channels)
 		}
 
-	loop:
+	channnelloop:
 		for _, i := range util.UniqRands(num, len(channels)) {
-			workCh <- channels[i]
+			workChannelCh <- channels[i]
 		}
 
 		numDirty := 0
@@ -737,7 +746,7 @@ func (n *NSQD) queueScanLoop() {
 		}
 
 		if float64(numDirty)/float64(num) > n.getOpts().QueueScanDirtyPercent {
-			goto loop
+			goto channnelloop
 		}
 	}
 
@@ -746,6 +755,23 @@ exit:
 	close(closeCh)
 	workTicker.Stop()
 	refreshTicker.Stop()
+}
+
+func (n *NSQD) GetTopicMapCopy() []*Topic {
+	n.RLock()
+	tmpList := make([]*Topic, 0, len(n.topicMap))
+	for _, t := range n.topicMap {
+		tmpList = append(tmpList, t)
+	}
+	n.RUnlock()
+	return tmpList
+}
+
+func (n *NSQD) flushAll() {
+	topics := n.GetTopicMapCopy()
+	for _, t := range topics {
+		t.Flush()
+	}
 }
 
 func buildTLSConfig(opts *Options) (*tls.Config, error) {
