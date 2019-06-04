@@ -28,7 +28,7 @@ type diskQueueWriter struct {
 	diskWriteEnd diskQueueEndInfo
 	diskReadEnd  diskQueueEndInfo
 	// the start of the queue , will be set to the cleaned offset
-	diskQueueStart diskQueueEndInfo
+	// diskQueueStart diskQueueEndInfo
 	sync.RWMutex
 
 	// instantiation time metadata
@@ -38,7 +38,10 @@ type diskQueueWriter struct {
 	minMsgSize      int32
 	maxMsgSize      int32
 	exitFlag        int32
+	exitChan        chan bool
 	needSync        bool
+
+	updatedBackendQueueEndChan chan bool
 
 	ctx *context
 
@@ -51,25 +54,27 @@ type diskQueueWriter struct {
 
 func NewDiskQueueWriter(name string, dataPath string, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32, ctx *context,
-	syncEvery int64) (BackendQueueWriter, error) {
+	syncEvery int64, updatedBackendQueueEndChan chan bool) (BackendQueueWriter, error) {
 	return newDiskQueueWriter(name, dataPath, maxBytesPerFile,
-		minMsgSize, maxMsgSize, ctx, syncEvery, false)
+		minMsgSize, maxMsgSize, ctx, syncEvery, false, updatedBackendQueueEndChan)
 }
 
 // newDiskQueue instantiates a new instance of diskQueueWriter, retrieving metadata
 // from the filesystem and starting the read ahead goroutine
 func newDiskQueueWriter(name string, dataPath string, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32, ctx *context,
-	syncEvery int64, readOnly bool) (BackendQueueWriter, error) {
+	syncEvery int64, readOnly bool, updatedBackendQueueEndChan chan bool) (BackendQueueWriter, error) {
 
 	d := diskQueueWriter{
-		name:            name,
-		dataPath:        dataPath,
-		maxBytesPerFile: maxBytesPerFile,
-		minMsgSize:      minMsgSize,
-		maxMsgSize:      maxMsgSize,
-		ctx:             ctx,
-		needSync:        true,
+		name:                       name,
+		dataPath:                   dataPath,
+		maxBytesPerFile:            maxBytesPerFile,
+		minMsgSize:                 minMsgSize,
+		maxMsgSize:                 maxMsgSize,
+		exitChan:                   make(chan bool),
+		updatedBackendQueueEndChan: updatedBackendQueueEndChan,
+		ctx:                        ctx,
+		needSync:                   true,
 	}
 
 	// no need to lock here, nothing else could possibly be touching this instance
@@ -93,17 +98,25 @@ func (d *diskQueueWriter) retrieveMetaData() error {
 	}
 	defer f.Close()
 
-	var totalCnt int64
+	var (
+		cnt       int64
+		fileNum   int64
+		pos       int64
+		virOffset int64
+	)
 	if _, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n",
-		&totalCnt,
-		&d.diskWriteEnd.EndOffset.FileNum, &d.diskWriteEnd.EndOffset.Pos, &d.diskWriteEnd.virtualOffset); err != nil {
+		&cnt, &fileNum, &pos, &virOffset); err != nil {
 		return err
 	} else {
-		d.ctx.nsqd.logf(LOG_INFO, "diskqueue(%s) retrieveMetaData MsgCnt:%d FileNum:%d Pos:%d Offset:%d",
-			d.name, totalCnt, d.diskWriteEnd.EndOffset.FileNum, d.diskWriteEnd.EndOffset.Pos, d.diskWriteEnd.virtualOffset)
+		d.ctx.nsqd.logf(LOG_INFO, "diskqueue(%s) writer retrieveMetaData MsgCnt:%d FileNum:%d Pos:%d Offset:%d",
+			d.name, cnt, fileNum, pos, virOffset)
 	}
 
-	atomic.StoreInt64(&d.diskWriteEnd.totalMsgCnt, totalCnt)
+	atomic.StoreInt64(&d.diskWriteEnd.totalMsgCnt, cnt)
+	atomic.StoreInt64(&d.diskWriteEnd.EndOffset.FileNum, fileNum)
+	atomic.StoreInt64(&d.diskWriteEnd.EndOffset.Pos, pos)
+	atomic.StoreInt64(&d.diskWriteEnd.virtualOffset, virOffset)
+
 	d.diskReadEnd = d.diskWriteEnd
 
 	return nil
@@ -218,6 +231,11 @@ func (d *diskQueueWriter) sync(fsync bool, metaSync bool) error {
 
 	d.diskReadEnd = d.diskWriteEnd
 
+	select {
+	case d.updatedBackendQueueEndChan <- true:
+	case <-d.exitChan:
+	}
+
 	if metaSync {
 		err := d.persistMetaData(d.diskWriteEnd)
 		if err != nil {
@@ -311,6 +329,7 @@ func (d *diskQueueWriter) Flush() error {
 
 // Close cleans up the queue and persists metadata
 func (d *diskQueueWriter) Close() error {
+	close(d.exitChan)
 	return d.exit(false)
 }
 
@@ -360,7 +379,7 @@ func (d *diskQueueWriter) deleteAllFiles(deleted bool) error {
 
 func (d *diskQueueWriter) cleanOldData() error {
 	// TODO close current file
-	cleanStartFileNum := d.diskQueueStart.EndOffset.FileNum - MAX_QUEUE_OFFSET_META_DATA_KEEP - 1
+	cleanStartFileNum := d.diskReadEnd.EndOffset.FileNum - MAX_QUEUE_OFFSET_META_DATA_KEEP - 1
 	if cleanStartFileNum < 0 {
 		cleanStartFileNum = 0
 	}
@@ -383,7 +402,7 @@ func (d *diskQueueWriter) cleanOldData() error {
 	d.diskWriteEnd.EndOffset.FileNum++
 	d.diskWriteEnd.EndOffset.Pos = 0
 	d.diskReadEnd = d.diskWriteEnd
-	d.diskQueueStart = d.diskWriteEnd
+	// d.diskQueueStart = d.diskWriteEnd
 	return nil
 }
 
@@ -403,10 +422,14 @@ func (d *diskQueueWriter) EndInfo() {
 
 }
 
-func (d *diskQueueWriter) GetQueueReadStart() BackendQueueEnd {
-	d.RLock()
+func (d *diskQueueWriter) GetQueueReadEnd() BackendQueueEnd {
 	e := &diskQueueEndInfo{}
-	*e = d.diskQueueStart
-	d.RUnlock()
+	*e = d.diskReadEnd
+	return e
+}
+
+func (d *diskQueueWriter) GetQueueCurWriterEnd() BackendQueueEnd {
+	e := &diskQueueEndInfo{}
+	*e = d.diskWriteEnd
 	return e
 }

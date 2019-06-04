@@ -21,7 +21,9 @@ type BackendQueueWriter interface {
 	Empty() error
 	Flush() error
 	EndInfo()
-	GetQueueReadStart() BackendQueueEnd
+	GetQueueReadEnd() BackendQueueEnd
+	GetQueueCurWriterEnd() BackendQueueEnd
+	// GetUpdatedBackendQueueEndChan() <-chan BackendQueueEnd
 }
 
 type ReadResult struct {
@@ -39,10 +41,15 @@ type BackendQueueReader interface {
 	Delete() error
 	Empty() error
 	Depth() int64
-	//Flush(bool) error
+	Flush() error
 	//GetQueueWriteEnd() BackendQueueEnd
 	//GetQueueReadStart() BackendQueueEnd
 	//GetQueueReadEnd() BackendQueueEnd
 	//RollbackWrite(BackendOffset, uint64) error
 	//ResetWriteEnd(BackendOffset, int64) error
+	UpdateBackendQueueEnd(BackendQueueEnd)
+	//TryReadOne() (*ReadResult, bool)
+	// ReadChan() chan ReadResult
+	TryReadOne() (*ReadResult, bool)
+	Confirm(start int64, end int64, endCnt int64) bool
 }

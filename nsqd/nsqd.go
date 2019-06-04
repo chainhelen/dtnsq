@@ -601,6 +601,7 @@ func (n *NSQD) Notify(v interface{}) {
 		// we do not block exit, see issue #123
 		select {
 		case <-n.exitChan:
+			return
 		case n.notifyChan <- v:
 			if !persist {
 				return
@@ -707,6 +708,7 @@ func (n *NSQD) queueScanLoop() {
 	workTicker := time.NewTicker(n.getOpts().QueueScanInterval)
 	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval)
 	flushTicker := time.NewTicker(n.getOpts().SyncTimeout)
+	loopReadTicker := time.NewTicker(n.getOpts().LoopReadTimeout)
 
 	channels := n.channels()
 	n.resizePool(workTopicCh, len(channels), workChannelCh, responseCh, closeCh)
@@ -723,6 +725,9 @@ func (n *NSQD) queueScanLoop() {
 			continue
 		case <-flushTicker.C:
 			n.flushAll()
+			continue
+		case <-loopReadTicker.C:
+			n.tryReadOne()
 			continue
 		case <-n.exitChan:
 			goto exit
@@ -771,6 +776,15 @@ func (n *NSQD) flushAll() {
 	topics := n.GetTopicMapCopy()
 	for _, t := range topics {
 		t.Flush()
+	}
+}
+
+func (n *NSQD) tryReadOne() {
+	topics := n.GetTopicMapCopy()
+	for _, t := range topics {
+		for _, c := range t.channelMap {
+			c.tryReadOneChan <- true
+		}
 	}
 }
 

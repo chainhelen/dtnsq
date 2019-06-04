@@ -179,10 +179,10 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, err
 	}
 	switch {
-	// case bytes.Equal(params[0], []byte("FIN")):
-	// 	return p.FIN(client, params)
-	// case bytes.Equal(params[0], []byte("RDY")):
-	// 	return p.RDY(client, params)
+	case bytes.Equal(params[0], []byte("FIN")):
+		return p.FIN(client, params)
+	case bytes.Equal(params[0], []byte("RDY")):
+		return p.RDY(client, params)
 	// case bytes.Equal(params[0], []byte("REQ")):
 	// 	return p.REQ(client, params)
 	case bytes.Equal(params[0], []byte("PUB")):
@@ -201,8 +201,8 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return p.NOP(client, params)
 		// case bytes.Equal(params[0], []byte("TOUCH")):
 		// 	return p.TOUCH(client, params)
-		// case bytes.Equal(params[0], []byte("SUB")):
-		// 	return p.SUB(client, params)
+	case bytes.Equal(params[0], []byte("SUB")):
+		return p.SUB(client, params)
 		// case bytes.Equal(params[0], []byte("CLS")):
 		// 	return p.CLS(client, params)
 		// case bytes.Equal(params[0], []byte("AUTH")):

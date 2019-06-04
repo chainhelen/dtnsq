@@ -34,6 +34,7 @@ type Options struct {
 	MaxBytesPerFile int64         `flag:"max-bytes-per-file"`
 	SyncEvery       int64         `flag:"sync-every"`
 	SyncTimeout     time.Duration `flag:"sync-timeout"`
+	LoopReadTimeout time.Duration `flag:"loop-read-timeout"`
 
 	QueueScanInterval        time.Duration
 	QueueScanRefreshInterval time.Duration
@@ -55,6 +56,7 @@ type Options struct {
 	MaxOutputBufferSize    int64         `flag:"max-output-buffer-size"`
 	MaxOutputBufferTimeout time.Duration `flag:"max-output-buffer-timeout"`
 	MinOutputBufferTimeout time.Duration `flag:"min-output-buffer-timeout"`
+	MaxConfirmWin          int64         `flag:"max-confirm-win"`
 	OutputBufferTimeout    time.Duration `flag:"output-buffer-timeout"`
 	MaxChannelConsumers    int           `flag:"max-channel-consumers"`
 
@@ -113,6 +115,7 @@ func NewOptions() *Options {
 		MaxBytesPerFile: 100 * 1024 * 1024,
 		SyncEvery:       2500,
 		SyncTimeout:     2 * time.Second,
+		LoopReadTimeout: 10 * time.Second,
 
 		QueueScanInterval:        100 * time.Millisecond,
 		QueueScanRefreshInterval: 5 * time.Second,
@@ -132,6 +135,7 @@ func NewOptions() *Options {
 		MaxOutputBufferSize:    64 * 1024,
 		MaxOutputBufferTimeout: 30 * time.Second,
 		MinOutputBufferTimeout: 25 * time.Millisecond,
+		MaxConfirmWin:          500,
 		OutputBufferTimeout:    250 * time.Millisecond,
 		MaxChannelConsumers:    0,
 

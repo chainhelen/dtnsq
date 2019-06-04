@@ -125,6 +125,7 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Int64("max-bytes-per-file", opts.MaxBytesPerFile, "number of bytes per diskqueue file before rolling")
 	flagSet.Int64("sync-every", opts.SyncEvery, "number of messages per diskqueue fsync")
 	flagSet.Duration("sync-timeout", opts.SyncTimeout, "duration of time per diskqueue fsync")
+	flagSet.Duration("loop-read-timeout", opts.LoopReadTimeout, "loop read every time")
 
 	// msg and command options
 	flagSet.Duration("msg-timeout", opts.MsgTimeout, "default duration to wait before auto-requeing a message")
@@ -139,6 +140,7 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Int64("max-output-buffer-size", opts.MaxOutputBufferSize, "maximum client configurable size (in bytes) for a client output buffer")
 	flagSet.Duration("max-output-buffer-timeout", opts.MaxOutputBufferTimeout, "maximum client configurable duration of time between flushing to a client")
 	flagSet.Duration("min-output-buffer-timeout", opts.MinOutputBufferTimeout, "minimum client configurable duration of time between flushing to a client")
+	flagSet.Int64("max-confirm-win", opts.MaxConfirmWin, "maximum confirm window (in bytes)")
 	flagSet.Duration("output-buffer-timeout", opts.OutputBufferTimeout, "default duration of time between flushing data to clients")
 	flagSet.Int("max-channel-consumers", opts.MaxChannelConsumers, "maximum channel consumer connection count per nsqd instance (default 0, i.e., unlimited)")
 

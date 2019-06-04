@@ -1,22 +1,22 @@
 package nsqd
 
 type dummyBackendQueue struct {
-	readChan chan []byte
+	readChan chan ReadResult
 }
 
 func newDummyBackendQueueWriter() BackendQueueWriter {
-	return &dummyBackendQueue{readChan: make(chan []byte)}
+	return &dummyBackendQueue{readChan: make(chan ReadResult)}
 }
 
 func newDummyBackendQueueReader() BackendQueueReader {
-	return &dummyBackendQueue{readChan: make(chan []byte)}
+	return &dummyBackendQueue{readChan: make(chan ReadResult)}
 }
 
 func (d *dummyBackendQueue) Put([]byte) (int64, int64, error) {
 	return 0, 0, nil
 }
 
-func (d *dummyBackendQueue) ReadChan() chan []byte {
+func (d *dummyBackendQueue) ReadChan() chan ReadResult {
 	return d.readChan
 }
 
@@ -44,7 +44,25 @@ func (d *dummyBackendQueue) Flush() error {
 	return nil
 }
 
-func (d *dummyBackendQueue) GetQueueReadStart() BackendQueueEnd {
+func (d *dummyBackendQueue) GetQueueReadEnd() BackendQueueEnd {
 	e := &diskQueueEndInfo{}
 	return e
+}
+
+func (d *dummyBackendQueue) GetQueueCurWriterEnd() BackendQueueEnd {
+	e := &diskQueueEndInfo{}
+	return e
+}
+
+func (d *dummyBackendQueue) TryReadOne() (*ReadResult, bool) {
+	return nil, false
+
+}
+
+func (d *dummyBackendQueue) UpdateBackendQueueEnd(BackendQueueEnd) {
+
+}
+
+func (d *dummyBackendQueue) Confirm(start int64, end int64, endCnt int64) bool {
+	return false
 }

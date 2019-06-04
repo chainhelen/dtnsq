@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"container/heap"
 	"errors"
+	"fmt"
+	"github.com/chainhelen/dtnsq/internal/util"
 	"math"
 	"strings"
 	"sync"
@@ -51,6 +53,10 @@ type Channel struct {
 	exitFlag      int32
 	exitMutex     sync.RWMutex
 
+	confirmedMsgs             *IntervalTree
+	updateBackendQueueEndChan chan bool
+	tryReadOneChan            chan bool
+
 	// state tracking
 	clients        map[int64]Consumer
 	paused         int32
@@ -71,19 +77,28 @@ type Channel struct {
 	dtPreMessages    map[MessageID]*Message
 	dtPrePQ          dtPrePqueue
 	dtPreMutex       sync.Mutex
+
+	waitGroup util.WaitGroupWrapper
+
+	maxWin int64
 }
 
 // NewChannel creates a new instance of the Channel type and returns a pointer
 func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
-	ctx *context, deleteCallback func(*Channel)) *Channel {
+	ctx *context, maxWin int64, deleteCallback func(*Channel)) *Channel {
 
 	c := &Channel{
-		topicName:      topicName,
-		name:           channelName,
-		clientMsgChan:  make(chan *Message, ctx.nsqd.getOpts().MemQueueSize),
-		clients:        make(map[int64]Consumer),
-		deleteCallback: deleteCallback,
-		ctx:            ctx,
+		topicName:                 topicName,
+		name:                      channelName,
+		clientMsgChan:             make(chan *Message),
+		exitChan:                  make(chan int),
+		clients:                   make(map[int64]Consumer),
+		confirmedMsgs:             NewIntervalTree(),
+		updateBackendQueueEndChan: make(chan bool),
+		tryReadOneChan:            make(chan bool, 1),
+		deleteCallback:            deleteCallback,
+		ctx:                       ctx,
+		maxWin:                    maxWin,
 	}
 	if len(ctx.nsqd.getOpts().E2EProcessingLatencyPercentiles) > 0 {
 		c.e2eProcessingLatencyStream = quantile.New(
@@ -117,46 +132,69 @@ func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
 		)
 	}
 
-	go c.messagePump()
-
+	c.waitGroup.Wrap(c.messagePump)
 	c.ctx.nsqd.Notify(c)
 
 	return c
 }
 
 func (c *Channel) messagePump() {
-	var readChan <-chan *ReadResult
+	maxWin := c.maxWin
 
 LOOP:
 	for {
 		if atomic.LoadInt32(&c.exitFlag) == 1 {
 			goto exit
 		}
-		if c.IsPaused() {
-
+		if c.confirmedMsgs.Len() > maxWin {
+			c.ctx.nsqd.logf(LOG_WARN, "channel (%v): len(confirmedMsg)=%d excess the limit win %d", c.confirmedMsgs.Len(), maxWin)
+			continue
 		}
+
 		select {
 		case <-c.exitChan:
 			goto exit
-		case data := <-readChan:
-			if data.Err != nil {
-				c.ctx.nsqd.logf(LOG_ERROR, "channel (%v): failed to read message - %s", c.name, data.Err)
-				time.Sleep(time.Millisecond * 100)
-				continue LOOP
+		case <-c.updateBackendQueueEndChan:
+			if r, ok := c.tryReadOne(); ok {
+				if err := c.handleMsg(*r); err != nil {
+					continue LOOP
+				}
 			}
-			msg, err := decodeMessage(data.Data)
-			if err != nil {
-				c.ctx.nsqd.logf(LOG_ERROR, "channel (%v): failed to read message - %s", c.name, data.Err)
-				time.Sleep(time.Millisecond * 100)
-				continue LOOP
+		case <-c.tryReadOneChan:
+			if r, ok := c.tryReadOne(); ok {
+				if err := c.handleMsg(*r); err != nil {
+					continue LOOP
+				}
 			}
-			msg.Offset = data.Offset
-			msg.queueCntIndex = data.CurCnt
-
-			c.clientMsgChan <- msg
 		}
 	}
 exit:
+	c.updateBackendQueueEndChan = nil
+	c.ctx.nsqd.logf(LOG_INFO, "CHANNEL(%s): closing ... messagePump", c.name)
+	close(c.clientMsgChan)
+}
+
+func (c *Channel) handleMsg(data ReadResult) error {
+	if data.Err != nil {
+		c.ctx.nsqd.logf(LOG_ERROR, "channel (%v): failed to read message - %s", c.name, data.Err)
+		time.Sleep(time.Millisecond * 100)
+		return fmt.Errorf("handleMsg failed")
+	}
+	msg, err := decodeMessage(data.Data)
+	if err != nil {
+		c.ctx.nsqd.logf(LOG_ERROR, "channel (%v): failed to read message - %s", c.name, err.Error())
+		time.Sleep(time.Millisecond * 100)
+		return fmt.Errorf("handleMsg failed")
+	}
+	msg.Offset = data.Offset
+	msg.queueCntIndex = data.CurCnt
+	msg.MovedSize = data.MovedSize
+
+	select {
+	case c.clientMsgChan <- msg:
+	case <-c.exitChan:
+	}
+	return nil
 }
 
 func (c *Channel) initPQ() {
@@ -196,6 +234,9 @@ func (c *Channel) Close() error {
 func (c *Channel) exit(deleted bool) error {
 	c.exitMutex.Lock()
 	defer c.exitMutex.Unlock()
+
+	close(c.exitChan)
+	c.waitGroup.Wait()
 
 	if !atomic.CompareAndSwapInt32(&c.exitFlag, 0, 1) {
 		return errors.New("exiting")
@@ -291,6 +332,10 @@ finish:
 		}
 	}
 	c.deferredMutex.Unlock()
+
+	if err := c.backend.Flush(); err != nil {
+		c.ctx.nsqd.logf(LOG_ERROR, "failed to backend  flush - %s", err)
+	}
 
 	return nil
 }
@@ -401,6 +446,16 @@ func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
 	if c.e2eProcessingLatencyStream != nil {
 		c.e2eProcessingLatencyStream.Insert(msg.Timestamp)
 	}
+
+	mergedInterval := c.confirmedMsgs.AddOrMerge(&QueueInterval{start: int64(msg.Offset),
+		end:    int64(msg.Offset) + int64(msg.MovedSize),
+		endCnt: int64(msg.queueCntIndex),
+	})
+
+	if delete := c.backend.Confirm(mergedInterval.Start(), mergedInterval.End(), mergedInterval.EndCnt()); delete {
+		c.confirmedMsgs.DeleteInterval(mergedInterval)
+	}
+
 	return nil
 }
 
@@ -669,6 +724,10 @@ exit:
 	return dirty
 }
 
+func (c *Channel) tryReadOne() (*ReadResult, bool) {
+	return c.backend.TryReadOne()
+}
+
 func (c *Channel) processInFlightQueue(t int64) bool {
 	c.exitMutex.RLock()
 	defer c.exitMutex.RUnlock()
@@ -744,4 +803,11 @@ func (c *Channel) processDtPreQueue(t int64) bool {
 
 exit:
 	return dirty
+}
+
+func (c *Channel) UpdateBackendQueueEnd(backendQueueEnd BackendQueueEnd) {
+	c.backend.UpdateBackendQueueEnd(backendQueueEnd)
+	if nil != c.updateBackendQueueEndChan {
+		c.updateBackendQueueEndChan <- true
+	}
 }

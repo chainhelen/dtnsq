@@ -36,6 +36,7 @@ type Message struct {
 	pri        int64
 	index      int
 	deferred   time.Duration
+	MovedSize  int64
 
 	//for backend queue
 	Offset        int64

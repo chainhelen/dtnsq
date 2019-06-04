@@ -19,16 +19,19 @@ type Topic struct {
 
 	sync.RWMutex
 
-	name              string
-	fullName          string
-	channelMap        map[string]*Channel
-	backend           BackendQueueWriter
-	startChan         chan int
-	exitChan          chan int
-	channelUpdateChan chan int
-	waitGroup         util.WaitGroupWrapper
-	exitFlag          int32
-	idFactory         *guidFactory
+	name     string
+	fullName string
+
+	channelLock sync.RWMutex
+	channelMap  map[string]*Channel
+
+	backend   BackendQueueWriter
+	startChan chan int
+	exitChan  chan int
+	//channelUpdateChan chan int
+	waitGroup util.WaitGroupWrapper
+	exitFlag  int32
+	idFactory *guidFactory
 
 	ephemeral      bool
 	deleteCallback func(*Topic)
@@ -44,23 +47,26 @@ type Topic struct {
 	dtPrePQ       dtPrePqueue
 	dtPreMutex    sync.Mutex
 
+	updatedBackendQueueEndChan chan bool
+
 	ctx *context
 }
 
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	t := &Topic{
-		name:              topicName,
-		channelMap:        make(map[string]*Channel),
-		startChan:         make(chan int, 1),
-		exitChan:          make(chan int),
-		channelUpdateChan: make(chan int),
-		clients:           make(map[int64]*clientV2),
-		ctx:               ctx,
-		paused:            0,
-		pauseChan:         make(chan int),
-		deleteCallback:    deleteCallback,
-		idFactory:         NewGUIDFactory(ctx.nsqd.getOpts().ID),
+		name:       topicName,
+		channelMap: make(map[string]*Channel),
+		startChan:  make(chan int, 1),
+		exitChan:   make(chan int),
+		//channelUpdateChan: make(chan int),
+		clients:                    make(map[int64]*clientV2),
+		updatedBackendQueueEndChan: make(chan bool),
+		ctx:                        ctx,
+		paused:                     0,
+		pauseChan:                  make(chan int),
+		deleteCallback:             deleteCallback,
+		idFactory:                  NewGUIDFactory(ctx.nsqd.getOpts().ID),
 	}
 
 	if strings.HasSuffix(topicName, "#ephemeral") {
@@ -74,7 +80,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 			int32(minValidMsgLength),
 			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength,
 			ctx,
-			ctx.nsqd.getOpts().SyncEvery)
+			ctx.nsqd.getOpts().SyncEvery, t.updatedBackendQueueEndChan)
 
 		t.fullName = GetTopicFullName(topicName, int(0))
 
@@ -90,9 +96,45 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		t.backend = queue
 	}
 
+	t.waitGroup.Wrap(t.messagePump)
 	t.ctx.nsqd.Notify(t)
 
 	return t
+}
+
+func (t *Topic) messagePump() {
+	updatedQueueChan := t.updatedBackendQueueEndChan
+
+	for {
+		if atomic.LoadInt32(&t.exitFlag) == 1 {
+			goto exit
+		}
+		select {
+		case <-updatedQueueChan:
+			t.UpdatedBackendQueueEndCallback()
+		case <-t.exitChan:
+			break
+		}
+	}
+exit:
+	t.ctx.nsqd.logf(LOG_INFO, "Topic (%s): close ... messagePump", t.name)
+}
+
+func (t *Topic) GetChannelMapCopy() map[string]*Channel {
+	tmpMap := make(map[string]*Channel)
+	t.channelLock.RLock()
+	for k, v := range t.channelMap {
+		tmpMap[k] = v
+	}
+	t.channelLock.RUnlock()
+	return tmpMap
+}
+
+func (t *Topic) UpdatedBackendQueueEndCallback() {
+	channels := t.GetChannelMapCopy()
+	for _, c := range channels {
+		c.UpdateBackendQueueEnd(t.backend.GetQueueReadEnd())
+	}
 }
 
 func GetTopicFullName(topic string, part int) string {
@@ -122,8 +164,10 @@ func (t *Topic) GetChannel(channelName string) *Channel {
 	if isNew {
 		// update messagePump state
 		select {
-		case t.channelUpdateChan <- 1:
+		//case t.channelUpdateChan <- 1:
 		case <-t.exitChan:
+		default:
+			t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s) update channelUpdateChan %s", t.name, channel.name)
 		}
 	}
 
@@ -137,8 +181,9 @@ func (t *Topic) getOrCreateChannel(channelName string) (*Channel, bool) {
 		deleteCallback := func(c *Channel) {
 			t.DeleteExistingChannel(c.name)
 		}
-		readEnd := t.backend.GetQueueReadStart()
-		channel = NewChannel(t.name, channelName, readEnd, t.ctx, deleteCallback)
+		readEnd := t.backend.GetQueueReadEnd()
+		ctx := t.ctx
+		channel = NewChannel(t.name, channelName, readEnd, ctx, ctx.nsqd.getOpts().MaxConfirmWin, deleteCallback)
 		t.channelMap[channelName] = channel
 		t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): new channel(%s)", t.name, channel.name)
 		return channel, true
@@ -177,8 +222,9 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 
 	// update messagePump state
 	select {
-	case t.channelUpdateChan <- 1:
 	case <-t.exitChan:
+	default:
+		t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s) update channelUpdateChan %s", t.name, channel.name)
 	}
 
 	if numChannels == 0 && t.ephemeral == true {
@@ -191,8 +237,9 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 // PutMessage writes a Message to the queue
 
 func (t *Topic) PutMessage(m *Message) error {
-	t.RLock()
-	defer t.RUnlock()
+	t.Lock()
+	defer t.Unlock()
+
 	if atomic.LoadInt32(&t.exitFlag) == 1 {
 		return errors.New("exiting")
 	}
@@ -238,7 +285,13 @@ func (t *Topic) Flush() error {
 		t.Unlock()
 		return err
 	}
+	channels := t.GetChannelMapCopy()
 	t.Unlock()
+
+	for _, c := range channels {
+		c.flush()
+	}
+
 	return nil
 }
 
@@ -377,6 +430,7 @@ retry:
 func (t *Topic) AddClient(clientID int64, client *clientV2) error {
 	t.Lock()
 	defer t.Unlock()
+
 	_, ok := t.clients[clientID]
 	if ok {
 		return nil
