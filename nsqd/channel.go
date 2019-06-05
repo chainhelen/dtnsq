@@ -186,9 +186,7 @@ func (c *Channel) handleMsg(data ReadResult) error {
 		time.Sleep(time.Millisecond * 100)
 		return fmt.Errorf("handleMsg failed")
 	}
-	msg.Offset = data.Offset
-	msg.queueCntIndex = data.CurCnt
-	msg.MovedSize = data.MovedSize
+	msg.BackendQueueEnd = data.bqe
 
 	select {
 	case c.clientMsgChan <- msg:
@@ -447,9 +445,9 @@ func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
 		c.e2eProcessingLatencyStream.Insert(msg.Timestamp)
 	}
 
-	mergedInterval := c.confirmedMsgs.AddOrMerge(&QueueInterval{start: int64(msg.Offset),
-		end:    int64(msg.Offset) + int64(msg.MovedSize),
-		endCnt: int64(msg.queueCntIndex),
+	mergedInterval := c.confirmedMsgs.AddOrMerge(&QueueInterval{start: int64(msg.Offset()),
+		end:    int64(msg.Offset()) + int64(msg.MovedSize),
+		endCnt: int64(msg.TotalMsgCnt()),
 	})
 
 	if delete := c.backend.Confirm(mergedInterval.Start(), mergedInterval.End(), mergedInterval.EndCnt()); delete {

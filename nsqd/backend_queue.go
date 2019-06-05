@@ -1,8 +1,8 @@
 package nsqd
 
-type BackendQueueOffset interface {
-	Offset() int64
-}
+//type BackendQueueOffset interface {
+//	Offset() int64
+//}
 
 type BackendQueueEnd interface {
 	Offset() int64
@@ -27,11 +27,12 @@ type BackendQueueWriter interface {
 }
 
 type ReadResult struct {
-	Offset    int64
-	MovedSize int64
-	CurCnt    int64
-	Data      []byte
-	Err       error
+	//Offset    int64
+	///MovedSize int64
+	//CurCnt    int64
+	bqe  BackendQueueEnd
+	Data []byte
+	Err  error
 }
 
 // for topic producer

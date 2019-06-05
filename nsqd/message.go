@@ -39,8 +39,9 @@ type Message struct {
 	MovedSize  int64
 
 	//for backend queue
-	Offset        int64
-	queueCntIndex int64
+	BackendQueueEnd
+	//Offset        int64
+	//queueCntIndex int64
 
 	// for dt
 	isDt       bool

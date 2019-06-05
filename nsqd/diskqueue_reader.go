@@ -237,10 +237,10 @@ func (d *diskQueueReader) TryReadOne() (*ReadResult, bool) {
 		stat    os.FileInfo
 		msgSize int32
 		result  ReadResult
+		bqe     diskQueueEndInfo
 	)
 
 CheckFileOpen:
-	result.Offset = d.readQueueInfo.Offset()
 	if d.readFile == nil {
 		curFileName := d.fileName(d.readQueueInfo.EndOffset.FileNum)
 		d.readFile, err = os.OpenFile(curFileName, os.O_RDONLY, 0644)
@@ -304,14 +304,18 @@ CheckFileOpen:
 		d.ctx.nsqd.logf(LOG_ERROR, "diskqueuereader (%v): binary.Read result.Data failed, %s", d.readFrom, err.Error())
 		return nil, false
 	}
-	result.Offset = d.readQueueInfo.Offset()
+
+	atomic.StoreInt64(&bqe.virtualOffset, d.readQueueInfo.virtualOffset)
+	bqe.totalMsgCnt = atomic.AddInt64(&d.readQueueInfo.totalMsgCnt, 1)
+	atomic.StoreInt64(&bqe.EndOffset.FileNum, d.readQueueEndInfo.EndOffset.FileNum)
+	atomic.StoreInt64(&bqe.EndOffset.Pos, d.readQueueEndInfo.EndOffset.Pos)
 
 	totalBytes := int64(4) + int64(msgSize)
-	result.MovedSize = totalBytes
-	result.CurCnt = atomic.AddInt64(&d.readQueueInfo.totalMsgCnt, 1)
 
 	d.readQueueInfo.virtualOffset += totalBytes
 	d.readQueueInfo.EndOffset.Pos += totalBytes
+
+	result.bqe = &bqe
 
 	//TODO  这地方是个坑，因为可能造成阻塞，LOCK的地方需要注意
 	// 竟然写出了一个死锁
