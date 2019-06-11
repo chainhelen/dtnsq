@@ -395,6 +395,18 @@ func (n *NSQD) LoadMetadata() error {
 		if t.Paused {
 			topic.Pause()
 		}
+		if topic.innnerDt {
+			channel := topic.GetChannel("_innerDt")
+			for {
+				if channel.backend.GetQueueReadEnd().Offset() == channel.backend.GetQueueCurMemRead().Offset() {
+					break
+				}
+				select {
+				case channel.tryReadOneChan <- true:
+				case <-n.exitChan:
+				}
+			}
+		}
 
 		/*for _, c := range t.Channels {
 			if !protocol.IsValidChannelName(c.Name) {
@@ -635,7 +647,7 @@ func (n *NSQD) channels() []*Channel {
 //
 // 	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
 // TODO dtnsq, maybe the strategy of resizePool should be changed.
-func (n *NSQD) resizePool(workTopicCh chan *Topic, num int, workChannelCh chan *Channel, responseCh chan bool, closeCh chan int) {
+func (n *NSQD) resizePool(num int, workChannelCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	idealPoolSize := int(float64(num) * 0.25)
 	if idealPoolSize < 1 {
 		idealPoolSize = 1
@@ -652,7 +664,7 @@ func (n *NSQD) resizePool(workTopicCh chan *Topic, num int, workChannelCh chan *
 		} else {
 			// expand
 			n.waitGroup.Wrap(func() {
-				n.queueScanWorker(workTopicCh, workChannelCh, responseCh, closeCh)
+				n.queueScanWorker(workChannelCh, responseCh, closeCh)
 			})
 			n.poolSize++
 		}
@@ -661,12 +673,9 @@ func (n *NSQD) resizePool(workTopicCh chan *Topic, num int, workChannelCh chan *
 
 // queueScanWorker receives work (in the form of a channel) from queueScanLoop
 // and processes the deferred and in-flight queues
-func (n *NSQD) queueScanWorker(workTopicCh chan *Topic, workChannelCh chan *Channel, responseCh chan bool, closeCh chan int) {
+func (n *NSQD) queueScanWorker(workChannelCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	for {
 		select {
-		case t := <-workTopicCh:
-			now := time.Now().Unix()
-			t.processDtPreQueue(now)
 		case c := <-workChannelCh:
 			now := time.Now().UnixNano()
 			dirty := false
@@ -701,7 +710,6 @@ func (n *NSQD) queueScanWorker(workTopicCh chan *Topic, workChannelCh chan *Chan
 // the loop continues without sleep.
 func (n *NSQD) queueScanLoop() {
 	workChannelCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)
-	workTopicCh := make(chan *Topic, n.getOpts().QueueScanSelectionCount)
 	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount)
 	closeCh := make(chan int)
 
@@ -711,7 +719,7 @@ func (n *NSQD) queueScanLoop() {
 	loopReadTicker := time.NewTicker(n.getOpts().LoopReadTimeout)
 
 	channels := n.channels()
-	n.resizePool(workTopicCh, len(channels), workChannelCh, responseCh, closeCh)
+	n.resizePool(len(channels), workChannelCh, responseCh, closeCh)
 
 	for {
 		select {
@@ -721,7 +729,7 @@ func (n *NSQD) queueScanLoop() {
 			}
 		case <-refreshTicker.C:
 			channels = n.channels()
-			n.resizePool(workTopicCh, len(channels), workChannelCh, responseCh, closeCh)
+			n.resizePool(len(channels), workChannelCh, responseCh, closeCh)
 			continue
 		case <-flushTicker.C:
 			n.flushAll()

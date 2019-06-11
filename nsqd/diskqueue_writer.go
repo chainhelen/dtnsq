@@ -122,14 +122,17 @@ func (d *diskQueueWriter) retrieveMetaData() error {
 	return nil
 }
 
-func (d *diskQueueWriter) writeOne(data []byte) (int64, *diskQueueEndInfo, error) {
-	var err error
+func (d *diskQueueWriter) writeOne(data []byte) (*diskQueueEndInfo, error) {
+	var (
+		err  error
+		dQEI *diskQueueEndInfo
+	)
 
 	if d.writeFile == nil {
 		curFileName := d.fileName(d.diskWriteEnd.EndOffset.FileNum)
 		d.writeFile, err = os.OpenFile(curFileName, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		d.ctx.nsqd.logf(LOG_INFO, "DISKQUEUE(%s): writeOne() opened %s", d.name, curFileName)
 
@@ -138,7 +141,7 @@ func (d *diskQueueWriter) writeOne(data []byte) (int64, *diskQueueEndInfo, error
 			if err != nil {
 				d.writeFile.Close()
 				d.writeFile = nil
-				return 0, nil, err
+				return nil, err
 			}
 		}
 
@@ -153,15 +156,18 @@ func (d *diskQueueWriter) writeOne(data []byte) (int64, *diskQueueEndInfo, error
 	dataLen := int32(len(data))
 
 	if dataLen < d.minMsgSize || dataLen > d.maxMsgSize {
-		return 0, nil, fmt.Errorf("invalid message write size (%d) maxMsgSize=%d", dataLen, d.maxMsgSize)
+		return nil, fmt.Errorf("invalid message write size (%d) maxMsgSize=%d", dataLen, d.maxMsgSize)
 	}
+	dQEI = &diskQueueEndInfo{}
+	atomic.StoreInt64(&dQEI.virtualOffset, d.diskWriteEnd.virtualOffset)
+	dQEI.totalMsgCnt = atomic.AddInt64(&d.diskWriteEnd.totalMsgCnt, 1)
+	atomic.StoreInt64(&dQEI.EndOffset.Pos, d.diskWriteEnd.EndOffset.Pos)
+	atomic.StoreInt64(&dQEI.EndOffset.FileNum, d.diskWriteEnd.EndOffset.FileNum)
 
-	writeOffset := d.diskWriteEnd.virtualOffset
 	totalBytes := int64(dataLen) + 4
 
 	d.diskWriteEnd.EndOffset.Pos += totalBytes
 	d.diskWriteEnd.virtualOffset += totalBytes
-	atomic.AddInt64(&d.diskWriteEnd.totalMsgCnt, 1)
 
 	err = binary.Write(d.bufferWriter, binary.BigEndian, dataLen)
 	if err != nil {
@@ -171,7 +177,7 @@ func (d *diskQueueWriter) writeOne(data []byte) (int64, *diskQueueEndInfo, error
 			d.writeFile = nil
 		}
 		d.ctx.nsqd.logf(LOG_INFO, "DISKQUEUE(%s): writeOne() faled %s", d.name, err)
-		return 0, nil, err
+		return nil, err
 	}
 
 	_, err = d.bufferWriter.Write(data)
@@ -182,7 +188,7 @@ func (d *diskQueueWriter) writeOne(data []byte) (int64, *diskQueueEndInfo, error
 			d.writeFile = nil
 		}
 		d.ctx.nsqd.logf(LOG_INFO, "DISKQUEUE(%s): writeOne() faled %s", d.name, err)
-		return 0, nil, err
+		return nil, err
 	}
 
 	if d.diskWriteEnd.EndOffset.Pos >= d.maxBytesPerFile {
@@ -208,7 +214,7 @@ func (d *diskQueueWriter) writeOne(data []byte) (int64, *diskQueueEndInfo, error
 		d.diskReadEnd = d.diskWriteEnd
 	}
 
-	return writeOffset, nil, err
+	return dQEI, err
 }
 
 func (d *diskQueueWriter) sync(fsync bool, metaSync bool) error {
@@ -299,21 +305,17 @@ func GetQueueFileName(dataRoot string, base string, fileNum int64) string {
 	return fmt.Sprintf(path.Join(dataRoot, "%s.diskqueue.%09d.dat"), base, fileNum)
 }
 
-func (d *diskQueueWriter) Put(data []byte) (int64, int64, error) {
+func (d *diskQueueWriter) Put(data []byte) (BackendQueueEnd, error) {
 	d.Lock()
 	defer d.Unlock()
 
 	if d.exitFlag == 1 {
-		return 0, 0, errors.New("exiting")
+		return nil, errors.New("exiting")
 	}
 
-	offset, dendinfo, werr := d.writeOne(data)
+	dendinfo, werr := d.writeOne(data)
 
-	if dendinfo == nil {
-		dendinfo = &diskQueueEndInfo{}
-	}
-
-	return offset, dendinfo.TotalMsgCnt(), werr
+	return dendinfo, werr
 }
 
 func (d *diskQueueWriter) Flush() error {

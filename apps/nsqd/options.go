@@ -4,11 +4,10 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"strconv"
-	"strings"
-
 	"github.com/chainhelen/dtnsq/internal/app"
 	"github.com/chainhelen/dtnsq/nsqd"
+	"strconv"
+	"strings"
 )
 
 type tlsRequiredOption int
@@ -124,6 +123,7 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Int64("mem-queue-size", opts.MemQueueSize, "number of messages to keep in memory (per topic/channel)")
 	flagSet.Int64("max-bytes-per-file", opts.MaxBytesPerFile, "number of bytes per diskqueue file before rolling")
 	flagSet.Int64("sync-every", opts.SyncEvery, "number of messages per diskqueue fsync")
+	flagSet.Duration("dt-checkback-timeout", opts.DtCheckBackTimeout, "dt checkback-timeout")
 	flagSet.Duration("sync-timeout", opts.SyncTimeout, "duration of time per diskqueue fsync")
 	flagSet.Duration("loop-read-timeout", opts.LoopReadTimeout, "loop read every time")
 

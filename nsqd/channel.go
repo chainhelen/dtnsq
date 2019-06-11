@@ -48,10 +48,11 @@ type Channel struct {
 	backend BackendQueueReader
 
 	//memoryMsgChan chan *Message
-	clientMsgChan chan *Message
-	exitChan      chan int
-	exitFlag      int32
-	exitMutex     sync.RWMutex
+	clientMsgChan       chan *Message
+	clientCheckBackChan chan *Message
+	exitChan            chan int
+	exitFlag            int32
+	exitMutex           sync.RWMutex
 
 	confirmedMsgs             *IntervalTree
 	updateBackendQueueEndChan chan bool
@@ -63,6 +64,7 @@ type Channel struct {
 	ephemeral      bool
 	deleteCallback func(*Channel)
 	deleter        sync.Once
+	innerDt        bool
 
 	// Stats tracking
 	e2eProcessingLatencyStream *quantile.Quantile
@@ -91,6 +93,7 @@ func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
 		topicName:                 topicName,
 		name:                      channelName,
 		clientMsgChan:             make(chan *Message),
+		clientCheckBackChan:       make(chan *Message),
 		exitChan:                  make(chan int),
 		clients:                   make(map[int64]Consumer),
 		confirmedMsgs:             NewIntervalTree(),
@@ -130,6 +133,10 @@ func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
 			ctx.nsqd.getOpts().SyncTimeout,
 			chEnd,
 		)
+	}
+
+	if len(channelName) > 0 && channelName[0] == '_' {
+		c.innerDt = true
 	}
 
 	c.waitGroup.Wrap(c.messagePump)
@@ -188,9 +195,13 @@ func (c *Channel) handleMsg(data ReadResult) error {
 	}
 	msg.BackendQueueEnd = data.bqe
 
-	select {
-	case c.clientMsgChan <- msg:
-	case <-c.exitChan:
+	if c.innerDt {
+		c.StartPreDtMsgTimeout(msg, c.ctx.nsqd.getOpts().DtCheckBackTimeout)
+	} else {
+		select {
+		case c.clientMsgChan <- msg:
+		case <-c.exitChan:
+		}
 	}
 	return nil
 }
@@ -314,7 +325,7 @@ func (c *Channel) flush() error {
 finish:
 	c.inFlightMutex.Lock()
 	for _, msg := range c.inFlightMessages {
-		err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
+		_, err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
 		if err != nil {
 			c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
 		}
@@ -324,7 +335,7 @@ finish:
 	c.deferredMutex.Lock()
 	for _, item := range c.deferredMessages {
 		msg := item.Value.(*Message)
-		err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
+		_, err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
 		if err != nil {
 			c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
 		}
@@ -457,6 +468,25 @@ func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
 	return nil
 }
 
+func (c *Channel) CommitDtPreMsg(msgId MessageID) error {
+	msg, err := c.popDtPreMessage(msgId)
+	if err != nil {
+		return err
+	}
+	c.removeFromDtPrePQ(msg)
+
+	mergedInterval := c.confirmedMsgs.AddOrMerge(&QueueInterval{start: int64(msg.Offset()),
+		end:    int64(msg.Offset()) + int64(msg.MovedSize),
+		endCnt: int64(msg.TotalMsgCnt()),
+	})
+
+	if delete := c.backend.Confirm(mergedInterval.Start(), mergedInterval.End(), mergedInterval.EndCnt()); delete {
+		c.confirmedMsgs.DeleteInterval(mergedInterval)
+	}
+
+	return nil
+}
+
 // RequeueMessage requeues a message based on `time.Duration`, ie:
 //
 // `timeoutMs` == 0 - requeue a message immediately
@@ -522,19 +552,6 @@ func (c *Channel) RemoveClient(clientID int64) {
 	}
 }
 
-// TODO dtnsq
-func (c *Channel) HandleDtPreChannel(msg *Message, discardtimeout time.Duration) error {
-	now := time.Now()
-	msg.deliveryTS = now
-	msg.pri = now.Add(discardtimeout).UnixNano()
-	err := c.pushDtPreMessage(msg)
-	if err != nil {
-		return err
-	}
-	c.addToDtPrePQ(msg)
-	return nil
-}
-
 func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout time.Duration) error {
 	now := time.Now()
 	msg.clientID = clientID
@@ -548,18 +565,25 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	return nil
 }
 
-//func (c *Channel) StartPreDtMsgTimeout(msg *Message, clientID int64, timeout time.Duration) error {
-//	now := time.Now()
-//	// msg.clientID = clientID
-//	msg.deliveryTS = now
-//	msg.pri = now.Add(timeout).UnixNano()
-//	err := c.pushDtPreMessage(msg)
-//	if err != nil {
-//		return err
-//	}
-//	c.addToDtPrePQ(msg)
-//	return nil
-//}
+func (c *Channel) StartPreDtMsgTimeout(msg *Message, timeout time.Duration) error {
+	now := time.Now()
+	msg.deliveryTS = now
+	msg.pri = now.Add(timeout).UnixNano()
+	err := c.pushDtPreMessage(msg)
+	if err != nil {
+		return err
+	}
+	c.addToDtPrePQ(msg)
+	return nil
+}
+
+func (c *Channel) RestartPreDtMsgTimeout(msg *Message, timeout time.Duration) {
+	now := time.Now()
+	msg.deliveryTS = now
+	msg.pri = now.Add(timeout).UnixNano()
+	c.pushDtPreMessage(msg)
+	c.addToDtPrePQ(msg)
+}
 
 func (c *Channel) StartDeferredTimeout(msg *Message, timeout time.Duration) error {
 	absTs := time.Now().Add(timeout).UnixNano()
@@ -645,9 +669,31 @@ func (c *Channel) popDtPreMessage(id MessageID) (*Message, error) {
 	return msg, nil
 }
 
+func (c *Channel) GetDtPreMsgByCmtMsg(msgId MessageID) (*Message, error) {
+	c.dtPreMutex.Lock()
+	msg, ok := c.dtPreMessages[msgId]
+	if !ok {
+		c.dtPreMutex.Unlock()
+		return nil, errors.New("ID not in dtpre")
+	}
+	c.dtPreMutex.Unlock()
+	return msg, nil
+}
+
 func (c *Channel) addToDtPrePQ(msg *Message) {
 	c.dtPreMutex.Lock()
 	c.dtPrePQ.Push(msg)
+	c.dtPreMutex.Unlock()
+}
+
+func (c *Channel) removeFromDtPrePQ(msg *Message) {
+	c.dtPreMutex.Lock()
+	if msg.index == -1 {
+		// this item has already been popped off the pqueue
+		c.dtPreMutex.Unlock()
+		return
+	}
+	c.dtPrePQ.Remove(msg.index)
 	c.dtPreMutex.Unlock()
 }
 
@@ -772,6 +818,7 @@ func (c *Channel) processDtPreQueue(t int64) bool {
 	}
 
 	dirty := false
+	tmpMsg := make([]*Message, 0, len(c.dtPrePQ))
 	for {
 		c.dtPreMutex.Lock()
 		msg, _ := c.dtPrePQ.PeekAndShift(t)
@@ -782,9 +829,10 @@ func (c *Channel) processDtPreQueue(t int64) bool {
 		if msg == nil {
 			goto exit
 		}
+		tmpMsg = append(tmpMsg, msg)
 		dirty = true
 
-		_, err := c.popDtPreMessage(msg.ID)
+		_, err := c.GetDtPreMsgByCmtMsg(msg.ID)
 		if err != nil {
 			goto exit
 		}
@@ -794,13 +842,35 @@ func (c *Channel) processDtPreQueue(t int64) bool {
 			c.ctx.nsqd.logf(LOG_ERROR, "processDtPreQueue can't find topicName for topic:%s", c.topicName)
 			goto exit
 		} else {
-			c.ctx.nsqd.logf(LOG_ERROR, "processDtPreQueue %s;t%s", msg, t)
-			t.CheckBack(msg)
+			c.ctx.nsqd.logf(LOG_DEBUG, "processDtPreQueue msgId:%s Body:%s topic:%s", msg.ID, msg.Body, t.name)
+			c.CheckBack(msg)
 		}
 	}
 
 exit:
+
+	for i := 0; i < len(tmpMsg); i++ {
+		c.RestartPreDtMsgTimeout(tmpMsg[i], c.ctx.nsqd.getOpts().DtCheckBackTimeout)
+	}
+
 	return dirty
+}
+
+func (c *Channel) CheckBack(m *Message) {
+	c.RLock()
+	defer c.RUnlock()
+
+	if 0 == len(c.clients) {
+		c.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s) CHANNEL(%s): before send premsg checkBack failed, len(c.clients)=0", c.topicName, c.name)
+		return
+	}
+
+	c.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s) CHANNEL(%s): before send premsg checkBack", c.topicName, c.name)
+
+	select {
+	case c.clientCheckBackChan <- m:
+	case <-c.exitChan:
+	}
 }
 
 func (c *Channel) UpdateBackendQueueEnd(backendQueueEnd BackendQueueEnd) {

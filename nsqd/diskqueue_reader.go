@@ -146,8 +146,8 @@ func (d *diskQueueReader) metaDataFileName() string {
 }
 
 //TODO
-func (d *diskQueueReader) Put([]byte) (int64, int64, error) {
-	return 0, 0, nil
+func (d *diskQueueReader) Put([]byte) (BackendQueueEnd, error) {
+	return nil, nil
 }
 
 //TODO
@@ -359,4 +359,12 @@ func (d *diskQueueReader) Confirm(start int64, end int64, endCnt int64) bool {
 	}
 
 	return false
+}
+
+func (d *diskQueueReader) GetQueueReadEnd() BackendQueueEnd {
+	return &d.readQueueEndInfo
+}
+
+func (d *diskQueueReader) GetQueueCurMemRead() BackendQueueEnd {
+	return &d.readQueueInfo
 }

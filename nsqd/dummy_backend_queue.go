@@ -12,8 +12,12 @@ func newDummyBackendQueueReader() BackendQueueReader {
 	return &dummyBackendQueue{readChan: make(chan ReadResult)}
 }
 
-func (d *dummyBackendQueue) Put([]byte) (int64, int64, error) {
-	return 0, 0, nil
+func (d *dummyBackendQueue) GetQueueCurMemRead() BackendQueueEnd {
+	return nil
+}
+
+func (d *dummyBackendQueue) Put([]byte) (BackendQueueEnd, error) {
+	return nil, nil
 }
 
 func (d *dummyBackendQueue) ReadChan() chan ReadResult {

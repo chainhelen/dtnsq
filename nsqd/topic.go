@@ -40,14 +40,14 @@ type Topic struct {
 	paused    int32
 	pauseChan chan int
 
-	// for dt
-	clients map[int64]*clientV2
-
-	dtPreMessages map[MessageID]*Message
+	/*dtPreMessages map[MessageID]*Message
 	dtPrePQ       dtPrePqueue
 	dtPreMutex    sync.Mutex
+	*/
 
 	updatedBackendQueueEndChan chan bool
+
+	innnerDt bool
 
 	ctx *context
 }
@@ -55,12 +55,10 @@ type Topic struct {
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	t := &Topic{
-		name:       topicName,
-		channelMap: make(map[string]*Channel),
-		startChan:  make(chan int, 1),
-		exitChan:   make(chan int),
-		//channelUpdateChan: make(chan int),
-		clients:                    make(map[int64]*clientV2),
+		name:                       topicName,
+		channelMap:                 make(map[string]*Channel),
+		startChan:                  make(chan int, 1),
+		exitChan:                   make(chan int),
 		updatedBackendQueueEndChan: make(chan bool),
 		ctx:                        ctx,
 		paused:                     0,
@@ -94,6 +92,10 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		}
 
 		t.backend = queue
+	}
+
+	if len(topicName) > 0 && topicName[0] == '_' {
+		t.innnerDt = true
 	}
 
 	t.waitGroup.Wrap(t.messagePump)
@@ -243,7 +245,7 @@ func (t *Topic) PutMessage(m *Message) error {
 	if atomic.LoadInt32(&t.exitFlag) == 1 {
 		return errors.New("exiting")
 	}
-	err := t.put(m)
+	_, err := t.put(m)
 	if err != nil {
 		return err
 	}
@@ -251,6 +253,11 @@ func (t *Topic) PutMessage(m *Message) error {
 	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
 
 	return nil
+}
+
+func (t *Topic) CommitDtPreMsg(msgId MessageID) {
+	channel, _ := t.getOrCreateChannel("_innerDt")
+	channel.CommitDtPreMsg(msgId)
 }
 
 // PutMessages writes multiple Messages to the queue
@@ -264,7 +271,7 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 	messageTotalBytes := 0
 
 	for i, m := range msgs {
-		err := t.put(m)
+		_, err := t.put(m)
 		if err != nil {
 			atomic.AddUint64(&t.messageCount, uint64(i))
 			atomic.AddUint64(&t.messageBytes, uint64(messageTotalBytes))
@@ -295,9 +302,9 @@ func (t *Topic) Flush() error {
 	return nil
 }
 
-func (t *Topic) put(m *Message) error {
+func (t *Topic) put(m *Message) (BackendQueueEnd, error) {
 	b := bufferPoolGet()
-	err := writeMessageToBackend(b, m, t.backend.Put)
+	dendinfo, err := writeMessageToBackend(b, m, t.backend.Put)
 	bufferPoolPut(b)
 	t.ctx.nsqd.SetHealth(err)
 	if err != nil {
@@ -305,7 +312,8 @@ func (t *Topic) put(m *Message) error {
 			"TOPIC(%s) ERROR: failed to write message to backend - %s",
 			t.name, err)
 	}
-	return err
+	m.BackendQueueEnd = dendinfo
+	return dendinfo, err
 }
 
 // Delete empties the topic and all its channels and closes
@@ -427,146 +435,7 @@ retry:
 	return id.Hex()
 }
 
-func (t *Topic) AddClient(clientID int64, client *clientV2) error {
-	t.Lock()
-	defer t.Unlock()
-
-	_, ok := t.clients[clientID]
-	if ok {
-		return nil
-	}
-	// maxTopicClients := c.ctx.nsqd.getOpts().MaxTopicClients
-	// todo
-	maxTopicClients := 100
-	if maxTopicClients != 0 && len(t.clients) >= maxTopicClients {
-		return errors.New("E_TOO_MANY_TOPIC_DTPRODUCER")
-	}
-	t.clients[clientID] = client
-	client.DtTopic[t.name] = t
-	return nil
-}
-
-func (t *Topic) RemoveClient(clientID int64) {
-	t.Lock()
-	defer t.Unlock()
-
-	cli, ok := t.clients[clientID]
-	if !ok {
-		return
-	}
-	delete(t.clients, clientID)
-	delete(cli.DtTopic, t.name)
-}
-
-func (t *Topic) CheckBack(m *Message) {
-	t.RLock()
-	defer t.RUnlock()
-
-	t.put(m)
-
-	for _, cli := range t.clients {
-		//select {
-		t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s): before send checkBack send cli[%s]", t.name, cli)
-		cli.clientCheckBackChan <- m
-		t.ctx.nsqd.logf(LOG_DEBUG, "TOPIC(%s): after send checkBack send cli[%s]", t.name, cli)
-	}
-}
-
-func (t *Topic) addToDtPrePQ(msg *Message) {
-	t.dtPreMutex.Lock()
-	t.dtPrePQ.Push(msg)
-	t.dtPreMutex.Unlock()
-}
-
-// pushDtPreMessage atomically adds a message to the dtpre dictionary
-func (t *Topic) pushDtPreMessage(msg *Message) error {
-	t.dtPreMutex.Lock()
-	_, ok := t.dtPreMessages[msg.ID]
-	if ok {
-		t.dtPreMutex.Unlock()
-		return errors.New("ID already in dtpre")
-	}
-	t.dtPreMessages[msg.ID] = msg
-	t.dtPreMutex.Unlock()
-	return nil
-}
-
-func (t *Topic) GetMsgByCmtMsg(cmtMsg *Message) *Message {
-	t.dtPreMutex.Lock()
-	msg, _ := t.dtPreMessages[cmtMsg.GetDtPreMsgId()]
-	t.dtPreMutex.Unlock()
-	return msg
-}
-
-func (t *Topic) removeFromDtPrePQ(msg *Message) {
-	t.dtPreMutex.Lock()
-	if msg.index == -1 {
-		// this item has already been popped off the pqueue
-		t.dtPreMutex.Unlock()
-		return
-	}
-	t.dtPrePQ.Remove(msg.index)
-	t.dtPreMutex.Unlock()
-}
-
-func (t *Topic) removeDtMsg(cnlMsg *Message) error {
-	t.dtPreMutex.Lock()
-	msg, _ := t.dtPreMessages[cnlMsg.GetDtPreMsgId()]
-	if msg == nil {
-		t.dtPreMutex.Unlock()
-		return nil
-	}
-	t.dtPreMutex.Unlock()
-
-	_, err := t.popDtPreMessage(msg.ID)
-	if err != nil {
-		return err
-	}
-	t.removeFromDtPrePQ(msg)
-	return nil
-}
-
-// popDtpreMessage atomically removes a message from the dtpre dictionary
-func (t *Topic) popDtPreMessage(id MessageID) (*Message, error) {
-	t.dtPreMutex.Lock()
-	msg, ok := t.dtPreMessages[id]
-	if !ok {
-		t.dtPreMutex.Unlock()
-		return nil, errors.New("ID not in dtpre")
-	}
-	delete(t.dtPreMessages, id)
-	t.dtPreMutex.Unlock()
-	return msg, nil
-}
-
-func (t *Topic) processDtPreQueue(now int64) bool {
-	t.RLock()
-	defer t.RUnlock()
-
-	if t.Exiting() {
-		return false
-	}
-
-	dirty := false
-	for {
-		t.dtPreMutex.Lock()
-		msg, _ := t.dtPrePQ.PeekAndShift(now)
-		t.dtPreMutex.Unlock()
-
-		if msg == nil {
-			goto exit
-		}
-		dirty = true
-
-		_, err := t.popDtPreMessage(msg.ID)
-		if err != nil {
-			goto exit
-		}
-
-		t.ctx.nsqd.logf(LOG_DEBUG, "processDtPreQueue %s;t%s", msg, t)
-		t.CheckBack(msg)
-	}
-
-exit:
-	return dirty
+func (t *Topic) GetDtPreMsgByCmtMsg(msgId MessageID) (*Message, error) {
+	c := t.GetChannel("_innerDt")
+	return c.GetDtPreMsgByCmtMsg(msgId)
 }

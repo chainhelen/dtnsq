@@ -13,7 +13,7 @@ type BackendQueueEnd interface {
 // BackendQueue represents the behavior for the secondary message
 // storage system
 type BackendQueueWriter interface {
-	Put(data []byte) (int64, int64, error)
+	Put(data []byte) (BackendQueueEnd, error)
 	//ReadChan() chan []byte // this is expected to be an *unbuffered* channel
 	Close() error
 	Delete() error
@@ -37,17 +37,14 @@ type ReadResult struct {
 
 // for topic producer
 type BackendQueueReader interface {
-	Put([]byte) (int64, int64, error)
+	Put([]byte) (BackendQueueEnd, error)
 	Close() error
 	Delete() error
 	Empty() error
 	Depth() int64
 	Flush() error
-	//GetQueueWriteEnd() BackendQueueEnd
-	//GetQueueReadStart() BackendQueueEnd
-	//GetQueueReadEnd() BackendQueueEnd
-	//RollbackWrite(BackendOffset, uint64) error
-	//ResetWriteEnd(BackendOffset, int64) error
+	GetQueueReadEnd() BackendQueueEnd
+	GetQueueCurMemRead() BackendQueueEnd
 	UpdateBackendQueueEnd(BackendQueueEnd)
 	//TryReadOne() (*ReadResult, bool)
 	// ReadChan() chan ReadResult

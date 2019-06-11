@@ -29,12 +29,13 @@ type Options struct {
 	HTTPClientRequestTimeout time.Duration `flag:"http-client-request-timeout" cfg:"http_client_request_timeout"`
 
 	// diskqueue options
-	DataPath        string        `flag:"data-path"`
-	MemQueueSize    int64         `flag:"mem-queue-size"`
-	MaxBytesPerFile int64         `flag:"max-bytes-per-file"`
-	SyncEvery       int64         `flag:"sync-every"`
-	SyncTimeout     time.Duration `flag:"sync-timeout"`
-	LoopReadTimeout time.Duration `flag:"loop-read-timeout"`
+	DataPath           string        `flag:"data-path"`
+	MemQueueSize       int64         `flag:"mem-queue-size"`
+	MaxBytesPerFile    int64         `flag:"max-bytes-per-file"`
+	SyncEvery          int64         `flag:"sync-every"`
+	DtCheckBackTimeout time.Duration `flag:"dt-checkback-timeout"`
+	SyncTimeout        time.Duration `flag:"sync-timeout"`
+	LoopReadTimeout    time.Duration `flag:"loop-read-timeout"`
 
 	QueueScanInterval        time.Duration
 	QueueScanRefreshInterval time.Duration
@@ -111,11 +112,12 @@ func NewOptions() *Options {
 		HTTPClientConnectTimeout: 2 * time.Second,
 		HTTPClientRequestTimeout: 5 * time.Second,
 
-		MemQueueSize:    10000,
-		MaxBytesPerFile: 100 * 1024 * 1024,
-		SyncEvery:       2500,
-		SyncTimeout:     2 * time.Second,
-		LoopReadTimeout: 10 * time.Second,
+		MemQueueSize:       10000,
+		MaxBytesPerFile:    100 * 1024 * 1024,
+		SyncEvery:          2500,
+		DtCheckBackTimeout: 10 * time.Second,
+		SyncTimeout:        2 * time.Second,
+		LoopReadTimeout:    10 * time.Second,
 
 		QueueScanInterval:        100 * time.Millisecond,
 		QueueScanRefreshInterval: 5 * time.Second,

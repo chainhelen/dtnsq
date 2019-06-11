@@ -44,9 +44,9 @@ type Message struct {
 	//queueCntIndex int64
 
 	// for dt
-	isDt       bool
-	dtStatus   MessageDtType
-	dtPreMsgId MessageID
+	//isDt       bool
+	//dtStatus   MessageDtType
+	//dtPreMsgId MessageID
 }
 
 func NewMessage(id MessageID, body []byte) *Message {
@@ -55,27 +55,6 @@ func NewMessage(id MessageID, body []byte) *Message {
 		Body:      body,
 		Timestamp: time.Now().UnixNano(),
 	}
-}
-
-// TODO mutex?
-func (m *Message) SetDtStatus(dtStatus MessageDtType) {
-	m.isDt = true
-	m.dtStatus = dtStatus
-}
-
-// TODO mutex?
-func (m *Message) GetDtStatus() (bool, MessageDtType) {
-	return m.isDt, m.dtStatus
-}
-
-func (m *Message) ExtractPreMsgIdFromCmtMsgBody(body []byte) {
-	var h MessageID
-	copy(h[:], body[0:MsgIDLength])
-	m.dtPreMsgId = h
-}
-
-func (m *Message) GetDtPreMsgId() MessageID {
-	return m.dtPreMsgId
 }
 
 func (m *Message) WriteTo(w io.Writer) (int64, error) {
@@ -131,12 +110,11 @@ func decodeMessage(b []byte) (*Message, error) {
 	return &msg, nil
 }
 
-func writeMessageToBackend(buf *bytes.Buffer, msg *Message, put func(x []byte) (int64, int64, error)) error {
+func writeMessageToBackend(buf *bytes.Buffer, msg *Message, put func(x []byte) (BackendQueueEnd, error)) (BackendQueueEnd, error) {
 	buf.Reset()
 	_, err := msg.WriteTo(buf)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, _, err = put(buf.Bytes())
-	return err
+	return put(buf.Bytes())
 }

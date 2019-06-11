@@ -85,7 +85,6 @@ type clientV2 struct {
 	State          int32
 	ConnectTime    time.Time
 	Channel        *Channel
-	DtTopic        map[string]*Topic
 	ReadyStateChan chan int
 	ExitChan       chan int
 
@@ -105,9 +104,8 @@ type clientV2 struct {
 	lenBuf   [4]byte
 	lenSlice []byte
 
-	AuthSecret          string
-	AuthState           *auth.State
-	clientCheckBackChan chan *Message
+	AuthSecret string
+	AuthState  *auth.State
 }
 
 func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
@@ -140,8 +138,6 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		ClientID: identifier,
 		Hostname: identifier,
 
-		DtTopic: make(map[string]*Topic),
-
 		SubEventChan:      make(chan *Channel, 1),
 		IdentifyEventChan: make(chan identifyEvent, 1),
 
@@ -149,8 +145,6 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		HeartbeatInterval: ctx.nsqd.getOpts().ClientTimeout / 2,
 
 		pubCounts: make(map[string]uint64),
-
-		clientCheckBackChan: make(chan *Message),
 	}
 	c.lenSlice = c.lenBuf[:]
 	return c

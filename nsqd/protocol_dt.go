@@ -118,12 +118,6 @@ func (p *protocolDT) IOLoop(conn net.Conn) error {
 		client.Channel.RemoveClient(client.ID)
 	}
 
-	for _, t := range client.DtTopic {
-		if t != nil {
-			t.RemoveClient(client.ID)
-		}
-	}
-
 	p.ctx.nsqd.RemoveClient(client.ID)
 	return err
 }
@@ -214,6 +208,7 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 	var err error
 	var clientMsgChan chan *Message
+	var clientCheckBackChan chan *Message
 	var subChannel *Channel
 	// NOTE: `flusherChan` is used to bound message latency for
 	// the pathological case of a channel on a low volume topic
@@ -241,9 +236,12 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 	close(startedChan)
 
 	for {
-		if subChannel == nil || !client.IsReadyForMessages() {
+		if subChannel != nil && subChannel.innerDt {
+			clientCheckBackChan = subChannel.clientCheckBackChan
+		} else if subChannel == nil || !client.IsReadyForMessages() {
 			// the client is not ready to receive messages...
 			clientMsgChan = nil
+			clientCheckBackChan = nil
 			flusherChan = nil
 			// force flush
 			client.writeLock.Lock()
@@ -257,11 +255,13 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 			// last iteration we flushed...
 			// do not select on the flusher ticker channel
 			clientMsgChan = subChannel.clientMsgChan
+			clientCheckBackChan = subChannel.clientCheckBackChan
 			flusherChan = nil
 		} else {
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
 			clientMsgChan = subChannel.clientMsgChan
+			clientCheckBackChan = subChannel.clientCheckBackChan
 			flusherChan = outputBufferTicker.C
 		}
 
@@ -321,7 +321,7 @@ func (p *protocolDT) messagePump(client *clientV2, startedChan chan bool) {
 				goto exit
 			}
 			flushed = false
-		case msg := <-client.clientCheckBackChan:
+		case msg := <-clientCheckBackChan:
 			p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(DT): [%s] receive checkBack body:%s", client, msg.Body)
 			err = p.SendMessage(client, msg)
 			if err != nil {
@@ -794,21 +794,36 @@ func (p *protocolDT) PUBPRE(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// change the innnerDt topic
+	topicName = "_" + topicName
 	topic := p.ctx.nsqd.GetTopic(topicName)
 
-	if err := topic.AddClient(client.ID, client); err != nil {
-		return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_TOPIC_DTPRODUCER",
-			fmt.Sprintf("dt producer for %s exceeds limit of %d",
-				topicName, 100))
-	}
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	msg.SetDtStatus(PRE_STATUS)
+
+	channelName := "_innerDt"
+	var channel *Channel
+	channel = topic.GetChannel(channelName)
+	if err := channel.AddClient(client.ID, client); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_CHANNEL_CONSUMERS",
+			fmt.Sprintf("channel consumers for %s:%s exceeds limit of %d",
+				topicName, channelName, p.ctx.nsqd.getOpts().MaxChannelConsumers))
+	}
+
+	client.Channel = channel
+	client.PublishedMessage(topicName, 1)
+	// update message pump
+	client.SubEventChan <- channel
+
+	// 并发是不是有问题？
+	if channel.confirmedMsgs.Len() >= p.ctx.nsqd.getOpts().MaxConfirmWin {
+		return nil, fmt.Errorf("Excess MaxconfirmWin:%d", p.ctx.nsqd.getOpts().MaxConfirmWin)
+	}
+
 	err = topic.PutMessage(msg)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
 	}
-
-	client.PublishedMessage(topicName, 1)
+	channel.StartPreDtMsgTimeout(msg, p.ctx.nsqd.getOpts().DtCheckBackTimeout)
 
 	return msg.ID[:], nil
 }
@@ -851,18 +866,30 @@ func (p *protocolDT) PUBCMT(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, err
 	}
 
+	innerTopic := p.ctx.nsqd.GetTopic("_" + topicName)
+	msgId := p.ExtractPreMsgIdFromCmtMsgBody(messageBody)
+	msg, err := innerTopic.GetDtPreMsgByCmtMsg(msgId)
+
+	if err != nil {
+		return nil, err
+	}
+
 	topic := p.ctx.nsqd.GetTopic(topicName)
-	msg := NewMessage(topic.GenerateID(), messageBody)
-	msg.ExtractPreMsgIdFromCmtMsgBody(messageBody)
-	msg.SetDtStatus(COMMIT_STATUS)
 	err = topic.PutMessage(msg)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
 	}
+	innerTopic.CommitDtPreMsg(msgId)
 
 	client.PublishedMessage(topicName, 1)
 
 	return okBytes, nil
+}
+
+func (p *protocolDT) ExtractPreMsgIdFromCmtMsgBody(body []byte) MessageID {
+	var h MessageID
+	copy(h[:], body[0:MsgIDLength])
+	return h
 }
 
 func (p *protocolDT) PUBCNL(client *clientV2, params [][]byte) ([]byte, error) {
@@ -905,8 +932,6 @@ func (p *protocolDT) PUBCNL(client *clientV2, params [][]byte) ([]byte, error) {
 
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	msg.ExtractPreMsgIdFromCmtMsgBody(messageBody)
-	msg.SetDtStatus(CANCEL_STATUS)
 	err = topic.PutMessage(msg)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUBPRE_FAILED", "PUBPRE failed "+err.Error())
