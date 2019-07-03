@@ -111,7 +111,6 @@ func decodeMessage(b []byte) (*Message, error) {
 }
 
 func writeMessageToBackend(buf *bytes.Buffer, msg *Message, put func(x []byte) (BackendQueueEnd, error)) (BackendQueueEnd, error) {
-	buf.Reset()
 	_, err := msg.WriteTo(buf)
 	if err != nil {
 		return nil, err

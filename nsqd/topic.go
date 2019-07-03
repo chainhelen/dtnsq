@@ -1,7 +1,10 @@
 package nsqd
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -253,6 +256,163 @@ func (t *Topic) PutMessage(m *Message) error {
 	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
 
 	return nil
+}
+
+func (t *Topic) HandleSyncTopicFromSlave(totalMsgCnt, filenum, fileoffset, virtutaloffset, maxnum int64) ([]byte, error) {
+
+	var (
+		originTotalMsgCnt   int64
+		originFilenum       int64
+		originFileoffset    int64
+		originVirtualoffset int64
+		originMaxnum        int64
+	)
+
+	atomic.StoreInt64(&originTotalMsgCnt, totalMsgCnt)
+	atomic.StoreInt64(&originFilenum, filenum)
+	atomic.StoreInt64(&originFileoffset, fileoffset)
+	atomic.StoreInt64(&originVirtualoffset, virtutaloffset)
+	atomic.StoreInt64(&originMaxnum, maxnum)
+
+	writer := t.backend.(*diskQueueWriter)
+	leftMsgCnt := writer.diskWriteEnd.totalMsgCnt - totalMsgCnt
+	needRespMsgCnt := int64(0)
+
+	if leftMsgCnt < 0 {
+		return nil, fmt.Errorf("exceed the master's totalmsgcnt")
+	}
+
+	if leftMsgCnt == 0 {
+
+		w := bufferPoolGet()
+		defer bufferPoolPut(w)
+
+		var buf [40]byte
+		binary.BigEndian.PutUint32(buf[:4], uint32(slaveSyncTopicResponseType))
+		w.Write(buf[:4])
+		binary.BigEndian.PutUint32(buf[:4], uint32(len([]byte(t.name))))
+		w.Write(buf[:4])
+		w.Write([]byte(t.name))
+
+		binary.BigEndian.PutUint64(buf[:8], uint64(originTotalMsgCnt))
+		binary.BigEndian.PutUint64(buf[8:16], uint64(originFilenum))
+		binary.BigEndian.PutUint64(buf[16:24], uint64(originFileoffset))
+		binary.BigEndian.PutUint64(buf[24:32], uint64(originVirtualoffset))
+		binary.BigEndian.PutUint64(buf[32:], uint64(originMaxnum))
+		w.Write(buf[:])
+
+		binary.BigEndian.PutUint64(buf[:8], uint64(totalMsgCnt))
+		binary.BigEndian.PutUint64(buf[8:16], uint64(filenum))
+		binary.BigEndian.PutUint64(buf[16:24], uint64(fileoffset))
+		binary.BigEndian.PutUint64(buf[24:32], uint64(virtutaloffset))
+		binary.BigEndian.PutUint64(buf[32:], uint64(0))
+		w.Write(buf[:])
+
+		binary.BigEndian.PutUint64(buf[:8], uint64(writer.diskWriteEnd.totalMsgCnt))
+		binary.BigEndian.PutUint64(buf[8:16], uint64(writer.diskWriteEnd.EndOffset.FileNum))
+		binary.BigEndian.PutUint64(buf[16:24], uint64(writer.diskWriteEnd.EndOffset.Pos))
+		binary.BigEndian.PutUint64(buf[24:32], uint64(writer.diskWriteEnd.virtualOffset))
+		w.Write(buf[:32])
+
+		return w.Bytes(), nil
+	}
+
+	if leftMsgCnt > maxnum {
+		needRespMsgCnt = maxnum
+	}
+
+	if filenum > writer.diskWriteEnd.EndOffset.FileNum {
+		return nil, fmt.Errorf("exceed the master's filenum")
+	}
+	curFileName := writer.fileName(filenum)
+	readFile, err := os.OpenFile(curFileName, os.O_RDONLY, 0644)
+	if err != nil {
+		t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) open %s failed: %s", t.name, curFileName, err)
+		return nil, fmt.Errorf("slavesynctopic (%v) open %s failed: %s", t.name, curFileName, err)
+	}
+	defer readFile.Close()
+	if fileoffset > 0 {
+		_, err = readFile.Seek(fileoffset, 0)
+		if err != nil {
+			t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) open %s, seek failed: %s", t.name, curFileName, fileoffset, err)
+			return nil, fmt.Errorf("slavesynctopic (%v) open %s, seek failed: %s", t.name, curFileName, fileoffset, err)
+		}
+	}
+
+	stat, err := readFile.Stat()
+	if err != nil {
+		t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) stat %s failed: %s", t.name, curFileName, err)
+		return nil, fmt.Errorf("slavesynctopic (%v) stat %s failed: %s", t.name, curFileName, err)
+	}
+
+	if fileoffset > stat.Size() {
+		atomic.AddInt64(&filenum, 1)
+		atomic.StoreInt64(&fileoffset, 0)
+		return t.HandleSyncTopicFromSlave(totalMsgCnt, filenum, fileoffset, virtutaloffset, maxnum)
+	}
+
+	w := bufferPoolGet()
+	defer bufferPoolPut(w)
+
+	var buf [40]byte
+	binary.BigEndian.PutUint32(buf[:4], uint32(slaveSyncTopicResponseType))
+	w.Write(buf[:4])
+	binary.BigEndian.PutUint32(buf[:4], uint32(len([]byte(t.name))))
+	w.Write(buf[:4])
+	w.Write([]byte(t.name))
+
+	binary.BigEndian.PutUint64(buf[:8], uint64(originTotalMsgCnt))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(originFilenum))
+	binary.BigEndian.PutUint64(buf[16:24], uint64(originFileoffset))
+	binary.BigEndian.PutUint64(buf[24:32], uint64(originVirtualoffset))
+	binary.BigEndian.PutUint64(buf[32:], uint64(originMaxnum))
+	w.Write(buf[:])
+
+	bs := bufferPoolGet()
+	for i := int64(0); i < needRespMsgCnt || fileoffset > stat.Size(); i++ {
+		var (
+			msgSize uint32
+			buf     [4]byte
+		)
+		if err = binary.Read(readFile, binary.BigEndian, &msgSize); err != nil {
+			bufferPoolPut(bs)
+			t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) read %s,msg len failed: %s", t.name, curFileName, err)
+			return nil, fmt.Errorf("slavesynctopic (%v) read %s,msg len failed: %s", t.name, curFileName, err)
+		}
+		data := make([]byte, msgSize)
+		if err = binary.Read(readFile, binary.BigEndian, data); err != nil {
+			bufferPoolPut(bs)
+			t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) read %s,msg body failed: %s", t.name, curFileName, err)
+			return nil, fmt.Errorf("slavesynctopic (%v) read %s,msg body failed: %s", t.name, curFileName, err)
+		}
+
+		binary.BigEndian.PutUint32(buf[:4], msgSize)
+		bs.Write(buf[:])
+		bs.Write(data)
+
+		totalBytes := int64(4) + int64(msgSize)
+
+		atomic.AddInt64(&totalMsgCnt, 1)
+		atomic.AddInt64(&virtutaloffset, totalBytes)
+		atomic.AddInt64(&fileoffset, totalBytes)
+	}
+
+	binary.BigEndian.PutUint64(buf[:8], uint64(totalMsgCnt))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(filenum))
+	binary.BigEndian.PutUint64(buf[16:24], uint64(fileoffset))
+	binary.BigEndian.PutUint64(buf[24:32], uint64(virtutaloffset))
+	binary.BigEndian.PutUint64(buf[32:], uint64(maxnum))
+	w.Write(buf[:])
+	w.Write(bs.Bytes())
+	bufferPoolPut(bs)
+
+	binary.BigEndian.PutUint64(buf[:8], uint64(writer.diskWriteEnd.totalMsgCnt))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(writer.diskWriteEnd.EndOffset.FileNum))
+	binary.BigEndian.PutUint64(buf[16:24], uint64(writer.diskWriteEnd.EndOffset.Pos))
+	binary.BigEndian.PutUint64(buf[24:32], uint64(writer.diskWriteEnd.virtualOffset))
+	w.Write(buf[:32])
+
+	return w.Bytes(), nil
 }
 
 func (t *Topic) CommitDtPreMsg(msgId MessageID) {

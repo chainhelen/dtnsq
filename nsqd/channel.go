@@ -3,6 +3,7 @@ package nsqd
 import (
 	"bytes"
 	"container/heap"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/chainhelen/dtnsq/internal/util"
@@ -878,4 +879,51 @@ func (c *Channel) UpdateBackendQueueEnd(backendQueueEnd BackendQueueEnd) {
 	if nil != c.updateBackendQueueEndChan {
 		c.updateBackendQueueEndChan <- true
 	}
+}
+
+func (c *Channel) HandleSyncChannelFromSlave() ([]byte, error) {
+	reader := c.backend.(*diskQueueReader)
+	if reader == nil {
+		return nil, fmt.Errorf("(%s:%s)backend change failed", c.topicName, c.name)
+	}
+
+	w := bufferPoolGet()
+
+	var buf [8]byte
+	binary.BigEndian.PutUint32(buf[:4], uint32(slaveSyncChannelResponseType))
+	w.Write(buf[:4])
+	binary.BigEndian.PutUint64(buf[:8], uint64(len([]byte(c.topicName))))
+	w.Write(buf[:8])
+	w.Write([]byte(c.topicName))
+
+	binary.BigEndian.PutUint64(buf[:8], uint64(len([]byte(c.name))))
+	w.Write(buf[:8])
+	w.Write([]byte(c.name))
+
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueInfo.totalMsgCnt))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.EndOffset.FileNum))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.EndOffset.Pos))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.virtualOffset))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueconfirmedInfo.totalMsgCnt))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueconfirmedInfo.EndOffset.FileNum))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueconfirmedInfo.EndOffset.Pos))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueconfirmedInfo.virtualOffset))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.totalMsgCnt))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.EndOffset.FileNum))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.EndOffset.Pos))
+	w.Write(buf[:8])
+	binary.BigEndian.PutUint64(buf[:8], uint64(reader.readQueueEndInfo.virtualOffset))
+	w.Write(buf[:8])
+
+	return w.Bytes(), nil
 }

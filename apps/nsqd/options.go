@@ -117,6 +117,7 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Var(&lookupdTCPAddrs, "lookupd-tcp-address", "lookupd TCP address (may be given multiple times)")
 	flagSet.Duration("http-client-connect-timeout", opts.HTTPClientConnectTimeout, "timeout for HTTP connect")
 	flagSet.Duration("http-client-request-timeout", opts.HTTPClientRequestTimeout, "timeout for HTTP request")
+	flagSet.String("nsqd-master-addr", opts.NsqdMasterAddr, "specify the master addr for itself, the nsqd become slave once this opt is setted")
 
 	// diskqueue options
 	flagSet.String("data-path", opts.DataPath, "path to store disk-backed messages")

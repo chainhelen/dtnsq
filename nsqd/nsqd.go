@@ -73,6 +73,13 @@ type NSQD struct {
 	exitChan             chan int
 	waitGroup            util.WaitGroupWrapper
 
+	// default true
+	//isMaster bool
+	// masterAddr is not nil when isMaster == false
+	// masterAddr string
+	slave              *Slave
+	slaveToMasterEvent chan struct{}
+
 	ci *clusterinfo.ClusterInfo
 }
 
@@ -96,7 +103,9 @@ func New(opts *Options) (*NSQD, error) {
 		notifyChan:           make(chan interface{}),
 		optsNotificationChan: make(chan struct{}, 1),
 		dl:                   dirlock.New(dataPath),
+		slaveToMasterEvent:   make(chan struct{}),
 	}
+
 	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout)
 	n.ci = clusterinfo.New(n.logf, httpcli)
 
@@ -104,6 +113,10 @@ func New(opts *Options) (*NSQD, error) {
 
 	n.swapOpts(opts)
 	n.errValue.Store(errStore{})
+
+	if opts.NsqdMasterAddr != "" {
+		n.slave = NewSlave(opts.NsqdMasterAddr, n.slaveToMasterEvent, &context{n})
+	}
 
 	err = n.dl.Lock()
 	if err != nil {
@@ -241,28 +254,41 @@ func (n *NSQD) RemoveClient(clientID int64) {
 	n.clientLock.Unlock()
 }
 
-func (n *NSQD) TopicList() string {
+func (n *NSQD) TopicList() []string {
 	var topicNames []string
 	n.RLock()
 	for i, _ := range n.topicMap {
 		topicNames = append(topicNames, i)
 	}
 	n.RUnlock()
-	return fmt.Sprintf("%s\n", topicNames)
+	return topicNames
 }
 
-func (n *NSQD) ChannelList(topicName string) string {
+func (n *NSQD) ChannelList(topicName string) []string {
 	var channelNames []string
 	n.RLock()
 	t := n.GetTopic(topicName)
 	if t == nil {
-		return "[]\n"
+		return nil
 	}
 	for i, _ := range t.channelMap {
 		channelNames = append(channelNames, i)
 	}
 	n.RUnlock()
-	return fmt.Sprintf("%s\n", channelNames)
+	return channelNames
+}
+
+func (n *NSQD) GetTopicsAndChannelsBytes() ([]byte, error) {
+	mp := make(map[string][]string)
+
+	topicLists := n.TopicList()
+
+	for _, tname := range topicLists {
+		cnames := n.ChannelList(tname)
+		mp[tname] = cnames
+	}
+
+	return json.Marshal(mp)
 }
 
 func (n *NSQD) preMsgListMost10Item(topicName string, channelName string) string {
@@ -317,7 +343,11 @@ func (n *NSQD) Main() error {
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop)
+	if n.slave == nil {
+		n.waitGroup.Wrap(n.queueScanLoop)
+	} else {
+		n.waitGroup.Wrap(n.SlaveSyncLoop)
+	}
 	n.waitGroup.Wrap(n.lookupLoop)
 	if n.getOpts().StatsdAddress != "" {
 		n.waitGroup.Wrap(n.statsdLoop)
@@ -408,7 +438,7 @@ func (n *NSQD) LoadMetadata() error {
 			}
 		}
 
-		/*for _, c := range t.Channels {
+		for _, c := range t.Channels {
 			if !protocol.IsValidChannelName(c.Name) {
 				n.logf(LOG_WARN, "skipping creation of invalid channel %s", c.Name)
 				continue
@@ -417,7 +447,7 @@ func (n *NSQD) LoadMetadata() error {
 			if c.Paused {
 				channel.Pause()
 			}
-		}*/
+		}
 		topic.Start()
 	}
 	return nil
@@ -501,6 +531,10 @@ func (n *NSQD) Exit() {
 	for _, topic := range n.topicMap {
 		topic.Close()
 	}
+	if n.slave != nil {
+		n.slave.Close()
+		n.slave = nil
+	}
 	n.Unlock()
 
 	n.logf(LOG_INFO, "NSQ: stopping subsystems")
@@ -510,10 +544,43 @@ func (n *NSQD) Exit() {
 	n.logf(LOG_INFO, "NSQ: bye")
 }
 
+//
+func (n *NSQD) HandleSyncTopicFromSlave(topicName string, totalMsgCnt, filenum, fileoffset, virtutaloffset, maxnum int64) ([]byte, error) {
+	n.RLock()
+	t, ok := n.topicMap[topicName]
+	if !ok {
+		n.RUnlock()
+		return nil, fmt.Errorf("(%s) there not exist topic", topicName)
+	}
+	n.RUnlock()
+
+	return t.HandleSyncTopicFromSlave(totalMsgCnt, filenum, fileoffset, virtutaloffset, maxnum)
+}
+
+func (n *NSQD) SlaveSyncChannel(topicName, channelName string) ([]byte, error) {
+	n.RLock()
+	t, ok := n.topicMap[topicName]
+	if !ok {
+		n.RUnlock()
+		return nil, fmt.Errorf("E_NOT_EXIST_TOPIC")
+	}
+	n.RUnlock()
+
+	t.channelLock.RLock()
+	c, ok := t.channelMap[channelName]
+	if !ok {
+		t.channelLock.RUnlock()
+		return nil, fmt.Errorf("E_NOT_EXIST_CHANNEL")
+	}
+	t.channelLock.RUnlock()
+
+	return c.HandleSyncChannelFromSlave()
+}
+
 // GetTopic performs a thread safe operation
 // to return a pointer to a Topic object (potentially new)
 func (n *NSQD) GetTopic(topicName string) *Topic {
-	// most likely, we already have this topic, so try read lock first.
+	// most likely, we already have this tSLAVE_SYNC_INFOopic, so try read lock first.
 	n.RLock()
 	t, ok := n.topicMap[topicName]
 	n.RUnlock()
@@ -692,6 +759,7 @@ func (n *NSQD) queueScanWorker(workChannelCh chan *Channel, responseCh chan bool
 		case <-closeCh:
 			return
 		}
+
 	}
 }
 
@@ -768,6 +836,25 @@ exit:
 	close(closeCh)
 	workTicker.Stop()
 	refreshTicker.Stop()
+}
+
+func (n *NSQD) SlaveSyncLoop() {
+
+	flushTicker := time.NewTicker(n.getOpts().SyncTimeout)
+	workTicker := time.NewTicker(time.Duration(20) * time.Second)
+
+	for {
+		select {
+		case <-workTicker.C:
+			if n.slave != nil {
+				n.slave.Sync()
+			}
+		case <-flushTicker.C:
+			n.flushAll()
+		case <-n.exitChan:
+			break
+		}
+	}
 }
 
 func (n *NSQD) GetTopicMapCopy() []*Topic {

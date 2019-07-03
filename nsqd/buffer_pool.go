@@ -14,7 +14,9 @@ func init() {
 }
 
 func bufferPoolGet() *bytes.Buffer {
-	return bp.Get().(*bytes.Buffer)
+	bps := bp.Get().(*bytes.Buffer)
+	bps.Reset()
+	return bps
 }
 
 func bufferPoolPut(b *bytes.Buffer) {

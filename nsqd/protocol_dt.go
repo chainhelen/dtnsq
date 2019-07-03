@@ -199,7 +199,11 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return p.SUB(client, params)
 		// case bytes.Equal(params[0], []byte("CLS")):
 		// 	return p.CLS(client, params)
-		// case bytes.Equal(params[0], []byte("AUTH")):
+	case bytes.Equal(params[0], []byte("SLAVE")):
+		return p.SLAVE(client, params)
+	case bytes.Equal(params[0], []byte("SLAVE_SYNC_INFO")):
+		return p.SLAVE_SYNC_INFO(client, params)
+	case bytes.Equal(params[0], []byte("AUTH")):
 		return p.AUTH(client, params)
 	}
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
@@ -630,6 +634,82 @@ func (p *protocolDT) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	client.SubEventChan <- channel
 
 	return okBytes, nil
+}
+
+func (p *protocolDT) SLAVE_SYNC_INFO(client *clientV2, params [][]byte) ([]byte, error) {
+	if len(params) != 1 {
+		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "SLAVE_SYNC_INFO insufficient number of params")
+	}
+
+	topicsAndChannelsBytes, err := p.ctx.nsqd.GetTopicsAndChannelsBytes()
+	if err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "SLAVE_SYNC_INFO topicsAndChannelsBytes failed")
+	}
+
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, uint32(slaveSyncInfoResponseType))
+
+	return append(buf, topicsAndChannelsBytes...), nil
+}
+
+func (p *protocolDT) SLAVE(client *clientV2, params [][]byte) ([]byte, error) {
+	if len(params) != 2 && len(params) != 3 {
+		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "SLAVE insufficient number of params")
+	}
+
+	topicName := string(params[1])
+	if !protocol.IsValidTopicName(topicName) {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
+			fmt.Sprintf("SLAVE topic name %q is not valid", topicName))
+	}
+
+	var channelName string
+	if len(params) == 3 {
+		if channelName = string(params[2]); !protocol.IsValidChannelName(channelName) {
+			return nil, protocol.NewFatalClientErr(nil, "E_BAD_CHANNEL",
+				fmt.Sprintf("SLAVE topic:channel name %q:%q is not valid", topicName, channelName))
+		}
+	}
+
+	var (
+		resp []byte
+		err  error
+	)
+
+	if channelName != "" {
+		if resp, err = p.ctx.nsqd.SlaveSyncChannel(topicName, channelName); err != nil {
+			return nil, protocol.NewFatalClientErr(nil, "E_BAD_SLAVE", err.Error())
+		}
+		return resp, nil
+	}
+
+	// todo, 变量不应该出现这里，模块化
+	var (
+		totalMsgCnt   int64
+		filenum       int64
+		fileoffset    int64
+		virtauloffset int64
+		maxnum        int64
+	)
+	if err = binary.Read(client.Reader, binary.BigEndian, &totalMsgCnt); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_PARAMS_SLAVE_MSGCNT", err.Error())
+	}
+	if err = binary.Read(client.Reader, binary.BigEndian, &filenum); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_PARAMS_SLAVE_FILENUM", err.Error())
+	}
+	if err = binary.Read(client.Reader, binary.BigEndian, &fileoffset); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_PARAMS_SLAVE_OFFSET", err.Error())
+	}
+	if err = binary.Read(client.Reader, binary.BigEndian, &virtauloffset); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_PARAMS_SLAVE_VIROFFSET", err.Error())
+	}
+	if err = binary.Read(client.Reader, binary.BigEndian, &maxnum); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_PARAMS_SLAVE_MAXNUM", err.Error())
+	}
+	if resp, err = p.ctx.nsqd.HandleSyncTopicFromSlave(topicName, totalMsgCnt, filenum, fileoffset, virtauloffset, maxnum); err != nil {
+		return nil, protocol.NewFatalClientErr(nil, "E_BAD_SLAVE", err.Error())
+	}
+	return resp, nil
 }
 
 func (p *protocolDT) RDY(client *clientV2, params [][]byte) ([]byte, error) {

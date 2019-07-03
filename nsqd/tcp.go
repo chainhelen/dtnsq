@@ -29,6 +29,13 @@ func (p *tcpServer) Handle(clientConn net.Conn) {
 	p.ctx.nsqd.logf(LOG_INFO, "CLIENT(%s): desired protocol magic '%s'",
 		clientConn.RemoteAddr(), protocolMagic)
 
+	// not work for client when it is slave
+	if p.ctx.nsqd.slave != nil {
+		protocol.SendFramedResponse(clientConn, frameTypeError, []byte("E_FORBIDDEN_SLAVE"))
+		clientConn.Close()
+		return
+	}
+
 	var prot protocol.Protocol
 	switch protocolMagic {
 	case "  V2":
