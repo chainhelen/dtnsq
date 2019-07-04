@@ -41,8 +41,6 @@ type diskQueueWriter struct {
 	exitChan        chan bool
 	needSync        bool
 
-	updatedBackendQueueEndChan chan bool
-
 	ctx *context
 
 	writeFile    *os.File
@@ -53,28 +51,26 @@ type diskQueueWriter struct {
 }
 
 func NewDiskQueueWriter(name string, dataPath string, maxBytesPerFile int64,
-	minMsgSize int32, maxMsgSize int32, ctx *context,
-	syncEvery int64, updatedBackendQueueEndChan chan bool) (BackendQueueWriter, error) {
+	minMsgSize int32, maxMsgSize int32, ctx *context) (BackendQueueWriter, error) {
 	return newDiskQueueWriter(name, dataPath, maxBytesPerFile,
-		minMsgSize, maxMsgSize, ctx, syncEvery, false, updatedBackendQueueEndChan)
+		minMsgSize, maxMsgSize, ctx, false)
 }
 
 // newDiskQueue instantiates a new instance of diskQueueWriter, retrieving metadata
 // from the filesystem and starting the read ahead goroutine
 func newDiskQueueWriter(name string, dataPath string, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32, ctx *context,
-	syncEvery int64, readOnly bool, updatedBackendQueueEndChan chan bool) (BackendQueueWriter, error) {
+	readOnly bool) (BackendQueueWriter, error) {
 
 	d := diskQueueWriter{
-		name:                       name,
-		dataPath:                   dataPath,
-		maxBytesPerFile:            maxBytesPerFile,
-		minMsgSize:                 minMsgSize,
-		maxMsgSize:                 maxMsgSize,
-		exitChan:                   make(chan bool),
-		updatedBackendQueueEndChan: updatedBackendQueueEndChan,
-		ctx:                        ctx,
-		needSync:                   true,
+		name:            name,
+		dataPath:        dataPath,
+		maxBytesPerFile: maxBytesPerFile,
+		minMsgSize:      minMsgSize,
+		maxMsgSize:      maxMsgSize,
+		exitChan:        make(chan bool),
+		ctx:             ctx,
+		needSync:        true,
 	}
 
 	// no need to lock here, nothing else could possibly be touching this instance
@@ -193,7 +189,7 @@ func (d *diskQueueWriter) writeOne(data []byte) (*diskQueueEndInfo, error) {
 
 	if d.diskWriteEnd.EndOffset.Pos >= d.maxBytesPerFile {
 		// sync every time we start writing to a new file
-		err = d.sync(true, false)
+		_, _, err = d.sync(true, false)
 		if err != nil {
 			d.ctx.nsqd.logf(LOG_ERROR, "diskqueue(%s) failed to sync - %s", d.name, err)
 		}
@@ -217,9 +213,12 @@ func (d *diskQueueWriter) writeOne(data []byte) (*diskQueueEndInfo, error) {
 	return dQEI, err
 }
 
-func (d *diskQueueWriter) sync(fsync bool, metaSync bool) error {
+func (d *diskQueueWriter) sync(fsync bool, metaSync bool) (bool, bool, error) {
+	fFlushFlag := false
+	mFlushFlag := false
+
 	if d.needSync == false {
-		return nil
+		return fFlushFlag, mFlushFlag, nil
 	}
 
 	if d.bufferWriter != nil {
@@ -231,22 +230,19 @@ func (d *diskQueueWriter) sync(fsync bool, metaSync bool) error {
 		if err != nil {
 			d.writeFile.Close()
 			d.writeFile = nil
-			return err
+			return fFlushFlag, mFlushFlag, err
 		}
+		fFlushFlag = true
 	}
 
 	d.diskReadEnd = d.diskWriteEnd
 
-	select {
-	case d.updatedBackendQueueEndChan <- true:
-	case <-d.exitChan:
-	}
-
 	if metaSync {
 		err := d.persistMetaData(d.diskWriteEnd)
 		if err != nil {
-			return err
+			return fFlushFlag, mFlushFlag, err
 		}
+		mFlushFlag = true
 		d.ctx.nsqd.logf(LOG_DEBUG, "DISKQUEUE(%s) persistMetaData filename:%s", d.name, d.metaDataFileName())
 	}
 
@@ -254,7 +250,7 @@ func (d *diskQueueWriter) sync(fsync bool, metaSync bool) error {
 		d.needSync = false
 	}
 
-	return nil
+	return fFlushFlag, mFlushFlag, nil
 }
 
 // persistMetaData atomically writes state to the filesystem
@@ -313,17 +309,15 @@ func (d *diskQueueWriter) Put(data []byte) (BackendQueueEnd, error) {
 		return nil, errors.New("exiting")
 	}
 
-	dendinfo, werr := d.writeOne(data)
-
-	return dendinfo, werr
+	return d.writeOne(data)
 }
 
-func (d *diskQueueWriter) Flush() error {
+func (d *diskQueueWriter) WriterFlush() (bool, bool, error) {
 	d.Lock()
 	defer d.Unlock()
 
 	if d.needSync == false {
-		return nil
+		return false, false, nil
 	}
 
 	return d.syncAll()
@@ -360,7 +354,7 @@ func (d *diskQueueWriter) exit(deleted bool) error {
 }
 
 // sync fsyncs the current writeFile and persists metadata
-func (d *diskQueueWriter) syncAll() error {
+func (d *diskQueueWriter) syncAll() (bool, bool, error) {
 	return d.sync(true, true)
 }
 

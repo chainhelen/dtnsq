@@ -44,7 +44,11 @@ func (d *dummyBackendQueue) EndInfo() {
 
 }
 
-func (d *dummyBackendQueue) Flush() error {
+func (d *dummyBackendQueue) WriterFlush() (bool, bool, error) {
+	return false, false, nil
+}
+
+func (d *dummyBackendQueue) ReaderFlush() error {
 	return nil
 }
 

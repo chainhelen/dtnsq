@@ -19,7 +19,7 @@ type BackendQueueWriter interface {
 	Delete() error
 	//	Depth() int64
 	Empty() error
-	Flush() error
+	WriterFlush() (bool, bool, error)
 	EndInfo()
 	GetQueueReadEnd() BackendQueueEnd
 	GetQueueCurWriterEnd() BackendQueueEnd
@@ -42,7 +42,7 @@ type BackendQueueReader interface {
 	Delete() error
 	Empty() error
 	Depth() int64
-	Flush() error
+	ReaderFlush() error
 	GetQueueReadEnd() BackendQueueEnd
 	GetQueueCurMemRead() BackendQueueEnd
 	UpdateBackendQueueEnd(BackendQueueEnd)

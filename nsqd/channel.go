@@ -148,6 +148,8 @@ func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
 
 func (c *Channel) messagePump() {
 	maxWin := c.maxWin
+	loopReadTicker := time.NewTicker(c.ctx.nsqd.getOpts().LoopReadTimeout)
+	syncTimeoutTicker := time.NewTicker(c.ctx.nsqd.getOpts().SyncTimeout)
 
 LOOP:
 	for {
@@ -168,13 +170,18 @@ LOOP:
 					continue LOOP
 				}
 			}
-		case <-c.tryReadOneChan:
+		case <-loopReadTicker.C:
 			if r, ok := c.tryReadOne(); ok {
 				if err := c.handleMsg(*r); err != nil {
 					continue LOOP
 				}
 			}
+		case <-syncTimeoutTicker.C:
+			if err := c.backend.ReaderFlush(); err != nil {
+				c.ctx.nsqd.logf(LOG_WARN, "(%s:%s)syncTimeoutTicker backendFlush failed %s", c.topicName, c.name, err)
+			}
 		}
+
 	}
 exit:
 	c.updateBackendQueueEndChan = nil
@@ -343,7 +350,7 @@ finish:
 	}
 	c.deferredMutex.Unlock()
 
-	if err := c.backend.Flush(); err != nil {
+	if err := c.backend.ReaderFlush(); err != nil {
 		c.ctx.nsqd.logf(LOG_ERROR, "failed to backend  flush - %s", err)
 	}
 

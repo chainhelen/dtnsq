@@ -40,15 +40,17 @@ type Topic struct {
 	deleteCallback func(*Topic)
 	deleter        sync.Once
 
-	paused    int32
-	pauseChan chan int
+	paused        int32
+	pauseChan     chan int
+	syncTimeout   time.Duration
+	syncEvery     int64
+	syncEveryChan chan bool
+	count         int64
 
 	/*dtPreMessages map[MessageID]*Message
 	dtPrePQ       dtPrePqueue
 	dtPreMutex    sync.Mutex
 	*/
-
-	updatedBackendQueueEndChan chan bool
 
 	innnerDt bool
 
@@ -58,17 +60,20 @@ type Topic struct {
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	t := &Topic{
-		name:                       topicName,
-		channelMap:                 make(map[string]*Channel),
-		startChan:                  make(chan int, 1),
-		exitChan:                   make(chan int),
-		updatedBackendQueueEndChan: make(chan bool),
-		ctx:                        ctx,
-		paused:                     0,
-		pauseChan:                  make(chan int),
-		deleteCallback:             deleteCallback,
-		idFactory:                  NewGUIDFactory(ctx.nsqd.getOpts().ID),
+		name:           topicName,
+		channelMap:     make(map[string]*Channel),
+		startChan:      make(chan int, 1),
+		exitChan:       make(chan int),
+		ctx:            ctx,
+		paused:         0,
+		pauseChan:      make(chan int),
+		deleteCallback: deleteCallback,
+		idFactory:      NewGUIDFactory(ctx.nsqd.getOpts().ID),
+		syncEveryChan:  make(chan bool),
 	}
+
+	t.syncEvery = ctx.nsqd.getOpts().SyncEvery
+	t.syncTimeout = ctx.nsqd.getOpts().SyncTimeout
 
 	if strings.HasSuffix(topicName, "#ephemeral") {
 		t.ephemeral = true
@@ -80,8 +85,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 			ctx.nsqd.getOpts().MaxBytesPerFile,
 			int32(minValidMsgLength),
 			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength,
-			ctx,
-			ctx.nsqd.getOpts().SyncEvery, t.updatedBackendQueueEndChan)
+			ctx)
 
 		t.fullName = GetTopicFullName(topicName, int(0))
 
@@ -108,15 +112,21 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 }
 
 func (t *Topic) messagePump() {
-	updatedQueueChan := t.updatedBackendQueueEndChan
+	flushTicker := time.NewTicker(t.syncTimeout)
 
 	for {
 		if atomic.LoadInt32(&t.exitFlag) == 1 {
 			goto exit
 		}
 		select {
-		case <-updatedQueueChan:
-			t.UpdatedBackendQueueEndCallback()
+		case <-t.syncEveryChan:
+			if f, _, err := t.backend.WriterFlush(); err == nil && f {
+				t.UpdatedBackendQueueEndCallback()
+			}
+		case <-flushTicker.C:
+			if f, _, err := t.backend.WriterFlush(); err == nil && f {
+				t.UpdatedBackendQueueEndCallback()
+			}
 		case <-t.exitChan:
 			break
 		}
@@ -445,10 +455,9 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 	return nil
 }
 
-func (t *Topic) Flush() error {
-	//TODO channel
+func (t *Topic) FlushTopicAndChannels() error {
 	t.Lock()
-	if err := t.backend.Flush(); err != nil {
+	if _, _, err := t.backend.WriterFlush(); err != nil {
 		t.Unlock()
 		return err
 	}
@@ -473,6 +482,16 @@ func (t *Topic) put(m *Message) (BackendQueueEnd, error) {
 			t.name, err)
 	}
 	m.BackendQueueEnd = dendinfo
+
+	atomic.AddInt64(&t.count, 1)
+	if atomic.CompareAndSwapInt64(&t.count, t.syncEvery, 0) {
+		select {
+		case t.syncEveryChan <- true:
+		default:
+			t.ctx.nsqd.logf(LOG_ERROR, "TOPIC(%s) ERROR: failed to t.SyncEveryChan <- true", t.name)
+		}
+	}
+
 	return dendinfo, err
 }
 

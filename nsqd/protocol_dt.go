@@ -187,8 +187,8 @@ func (p *protocolDT) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return p.PUBCMT(client, params)
 	case bytes.Equal(params[0], []byte("PUBCNL")):
 		return p.PUBCNL(client, params)
-		// case bytes.Equal(params[0], []byte("MPUB")):
-		// 	return p.MPUB(client, params)
+	case bytes.Equal(params[0], []byte("MPUB")):
+		return p.MPUB(client, params)
 		// case bytes.Equal(params[0], []byte("DPUB")):
 		// 	return p.DPUB(client, params)
 	case bytes.Equal(params[0], []byte("NOP")):

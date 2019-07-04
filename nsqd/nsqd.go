@@ -529,6 +529,7 @@ func (n *NSQD) Exit() {
 	}
 	n.logf(LOG_INFO, "NSQ: closing topics")
 	for _, topic := range n.topicMap {
+		//topic.FlushTopicAndChannels()
 		topic.Close()
 	}
 	if n.slave != nil {
@@ -783,8 +784,6 @@ func (n *NSQD) queueScanLoop() {
 
 	workTicker := time.NewTicker(n.getOpts().QueueScanInterval)
 	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval)
-	flushTicker := time.NewTicker(n.getOpts().SyncTimeout)
-	loopReadTicker := time.NewTicker(n.getOpts().LoopReadTimeout)
 
 	channels := n.channels()
 	n.resizePool(len(channels), workChannelCh, responseCh, closeCh)
@@ -798,12 +797,6 @@ func (n *NSQD) queueScanLoop() {
 		case <-refreshTicker.C:
 			channels = n.channels()
 			n.resizePool(len(channels), workChannelCh, responseCh, closeCh)
-			continue
-		case <-flushTicker.C:
-			n.flushAll()
-			continue
-		case <-loopReadTicker.C:
-			n.tryReadOne()
 			continue
 		case <-n.exitChan:
 			goto exit
@@ -839,8 +832,6 @@ exit:
 }
 
 func (n *NSQD) SlaveSyncLoop() {
-
-	flushTicker := time.NewTicker(n.getOpts().SyncTimeout)
 	workTicker := time.NewTicker(time.Duration(20) * time.Second)
 
 	for {
@@ -849,8 +840,6 @@ func (n *NSQD) SlaveSyncLoop() {
 			if n.slave != nil {
 				n.slave.Sync()
 			}
-		case <-flushTicker.C:
-			n.flushAll()
 		case <-n.exitChan:
 			break
 		}
@@ -870,16 +859,7 @@ func (n *NSQD) GetTopicMapCopy() []*Topic {
 func (n *NSQD) flushAll() {
 	topics := n.GetTopicMapCopy()
 	for _, t := range topics {
-		t.Flush()
-	}
-}
-
-func (n *NSQD) tryReadOne() {
-	topics := n.GetTopicMapCopy()
-	for _, t := range topics {
-		for _, c := range t.channelMap {
-			c.tryReadOneChan <- true
-		}
+		t.FlushTopicAndChannels()
 	}
 }
 

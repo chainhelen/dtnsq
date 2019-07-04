@@ -174,7 +174,7 @@ func (d *diskQueueReader) fileName(fileNum int64) string {
 	return GetQueueFileName(d.dataPath, d.readFrom, fileNum)
 }
 
-func (d *diskQueueReader) Flush() error {
+func (d *diskQueueReader) ReaderFlush() error {
 	d.metaFlushLock.Lock()
 	defer d.metaFlushLock.Unlock()
 
