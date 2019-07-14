@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nsqio/go-nsq"
+	"github.com/chainhelen/go-dtnsq"
 )
 
 var (
@@ -75,7 +75,7 @@ func pubWorker(td time.Duration, tcpAddr string, batchSize int, batch [][]byte, 
 	if err != nil {
 		panic(err.Error())
 	}
-	conn.Write(nsq.MagicV2)
+	conn.Write(nsq.MagicDT)
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	rdyChan <- 1
 	<-goChan
