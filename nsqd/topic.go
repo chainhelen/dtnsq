@@ -47,11 +47,6 @@ type Topic struct {
 	syncEveryChan chan bool
 	count         int64
 
-	/*dtPreMessages map[MessageID]*Message
-	dtPrePQ       dtPrePqueue
-	dtPreMutex    sync.Mutex
-	*/
-
 	innnerDt bool
 
 	ctx *context
@@ -465,7 +460,7 @@ func (t *Topic) FlushTopicAndChannels() error {
 	t.Unlock()
 
 	for _, c := range channels {
-		c.flush()
+		c.Close()
 	}
 
 	return nil

@@ -1,9 +1,5 @@
 package nsqd
 
-//type BackendQueueOffset interface {
-//	Offset() int64
-//}
-
 type BackendQueueEnd interface {
 	Offset() int64
 	TotalMsgCnt() int64
@@ -14,28 +10,23 @@ type BackendQueueEnd interface {
 // storage system
 type BackendQueueWriter interface {
 	Put(data []byte) (BackendQueueEnd, error)
-	//ReadChan() chan []byte // this is expected to be an *unbuffered* channel
 	Close() error
 	Delete() error
-	//	Depth() int64
 	Empty() error
 	WriterFlush() (bool, bool, error)
 	EndInfo()
 	GetQueueReadEnd() BackendQueueEnd
 	GetQueueCurWriterEnd() BackendQueueEnd
-	// GetUpdatedBackendQueueEndChan() <-chan BackendQueueEnd
 }
 
+// ReadResult represents the result for TryReadOne()
 type ReadResult struct {
-	//Offset    int64
-	///MovedSize int64
-	//CurCnt    int64
 	bqe  BackendQueueEnd
 	Data []byte
 	Err  error
 }
 
-// for topic producer
+// BackendQueueReader represents reader for current topic's consumer
 type BackendQueueReader interface {
 	Put([]byte) (BackendQueueEnd, error)
 	Close() error
@@ -46,8 +37,6 @@ type BackendQueueReader interface {
 	GetQueueReadEnd() BackendQueueEnd
 	GetQueueCurMemRead() BackendQueueEnd
 	UpdateBackendQueueEnd(BackendQueueEnd)
-	//TryReadOne() (*ReadResult, bool)
-	// ReadChan() chan ReadResult
 	TryReadOne() (*ReadResult, bool)
 	Confirm(start int64, end int64, endCnt int64) bool
 }

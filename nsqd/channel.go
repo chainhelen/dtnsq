@@ -165,14 +165,18 @@ LOOP:
 		case <-c.exitChan:
 			goto exit
 		case <-c.updateBackendQueueEndChan:
-			if r, ok := c.tryReadOne(); ok {
-				if err := c.handleMsg(*r); err != nil {
+			for {
+				if r, ok := c.tryReadOne(); ok {
+					c.handleMsg(*r)
+				} else {
 					continue LOOP
 				}
 			}
 		case <-loopReadTicker.C:
-			if r, ok := c.tryReadOne(); ok {
-				if err := c.handleMsg(*r); err != nil {
+			for {
+				if r, ok := c.tryReadOne(); ok {
+					c.handleMsg(*r)
+				} else {
 					continue LOOP
 				}
 			}
@@ -313,24 +317,6 @@ finish:
 func (c *Channel) flush() error {
 	var msgBuf bytes.Buffer
 
-	//if len(c.memoryMsgChan) > 0 || len(c.inFlightMessages) > 0 || len(c.deferredMessages) > 0 {
-	//	c.ctx.nsqd.logf(LOG_INFO, "CHANNEL(%s): flushing %d memory %d in-flight %d deferred messages to backend",
-	//		c.name, len(c.memoryMsgChan), len(c.inFlightMessages), len(c.deferredMessages))
-	//}
-
-	for {
-		select {
-		//case msg := <-c.memoryMsgChan:
-		//	err := writeMessageToBackend(&msgBuf, msg, c.backend)
-		//	if err != nil {
-		////		c.ctx.nsqd.logf(LOG_ERROR, "failed to write message to backend - %s", err)
-		//	}
-		default:
-			goto finish
-		}
-	}
-
-finish:
 	c.inFlightMutex.Lock()
 	for _, msg := range c.inFlightMessages {
 		_, err := writeMessageToBackend(&msgBuf, msg, c.backend.Put)
