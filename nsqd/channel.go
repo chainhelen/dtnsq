@@ -118,7 +118,6 @@ func NewChannel(topicName string, channelName string, chEnd BackendQueueEnd,
 		c.backend = newDummyBackendQueueReader()
 	} else {
 		// backend names, for uniqueness, automatically include the topic...
-		// TODO
 		backendReaderName := getBackendReaderName(c.topicName, 0, channelName)
 		backendWriterName := getBackendWriterName(c.topicName, 0)
 
@@ -396,16 +395,7 @@ func (c *Channel) PutMessage(m *Message) error {
 func (c *Channel) put(m *Message) error {
 	select {
 	case c.clientMsgChan <- m:
-		/*default:
-		b := bufferPoolGet()
-		err := writeMessageToBackend(b, m, c.backend)
-		bufferPoolPut(b)
-		c.ctx.nsqd.SetHealth(err)
-		if err != nil {
-			c.ctx.nsqd.logf(LOG_ERROR, "CHANNEL(%s): failed to write message to backend - %s",
-				c.name, err)
-			return err
-		}*/
+	case <-c.exitChan:
 	}
 	return nil
 }

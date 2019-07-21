@@ -130,30 +130,6 @@ func (s *Slave) CheckConn() error {
 	return nil
 }
 
-/*
-func (s *Slave) updateSyncRequestFlag() {
-	s.syncRequestFlag = time.Now().UnixNano()
-}
-
-func (s *Slave) getSyncReqBytes() []byte {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, uint64(s.syncRequestFlag))
-	return buf
-}
-
-func (s *Slave) checkSyncReqFlag(data []byte) bool {
-	if len(data) < 8 {
-		return false
-	}
-	// todo
-	return true
-	respFlag := int64(binary.BigEndian.Uint64(data[:8]))
-	if s.syncRequestFlag != respFlag {
-		return false
-	}
-	return true
-}*/
-
 func (s *Slave) checkSyncStepType(data []byte) int32 {
 	if len(data) < 4 {
 		return slaveSyncUnknownType
@@ -214,17 +190,6 @@ func (s *Slave) FilterResponse() {
 			}
 		}
 		if frameType == FrameTypeResponse && !bytes.Equal(data, []byte("_heartbeat_")) {
-			/*if !s.checkSyncReqFlag(data) {
-				// 如果发送不通，重新连接
-				s.CheckConn()
-				select {
-				case s.resChan <- Response{data: nil, err: FlagInconsistentError, frameType: FrameTypeUnknown}:
-				case <-s.exitChan:
-					return
-				}
-			}
-			data = data[8:]*/
-
 			var (
 				resType int32
 				res     Response
@@ -377,8 +342,6 @@ func (s *Slave) Sync() error {
 		}
 	}
 
-	fmt.Println(s.info)
-
 	return nil
 }
 
@@ -405,13 +368,9 @@ func (s *Slave) releaseSlave() {
 
 // SLAVE_SYNC_INFO sync_req_bytes
 func (s *Slave) slaveSyncInfoRequest() error {
-	//s.updateSyncRequestFlag()
-
 	bp := bufferPoolGet()
 
 	bp.Write([]byte("SLAVE_SYNC_INFO"))
-	//bp.Write([]byte(" "))
-	//bp.Write(s.getSyncReqBytes())
 	bp.Write([]byte("\n"))
 
 	b := bp.Bytes()
@@ -420,17 +379,13 @@ func (s *Slave) slaveSyncInfoRequest() error {
 	return s.sendToMaster(b)
 }
 
-// need to handle error
+// TODO need to handle error
 func (s *Slave) slaveSyncTopicRequest(t *Topic) error {
-	//s.updateSyncRequestFlag()
-
 	bp := bufferPoolGet()
 
 	bp.Write([]byte("SLAVE"))
 	bp.Write([]byte(" "))
 	bp.Write([]byte(t.name))
-	//bp.Write([]byte(" "))
-	//bp.Write(s.getSyncReqBytes())
 	bp.Write([]byte("\n"))
 
 	buf := make([]byte, 8)
