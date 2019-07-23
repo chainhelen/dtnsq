@@ -24,7 +24,7 @@ func TestPutMessage(t *testing.T) {
 	var id MessageID
 	msg := NewMessage(id, []byte("test"))
 
-	// put message but not trigger channel to consume msg
+	// put message without triggering channel to consume msg
 	topic.PutMessage(msg)
 	topic.backend.WriterFlush()
 	channel1.backend.UpdateBackendQueueEnd(topic.backend.GetQueueReadEnd())
@@ -40,7 +40,7 @@ func TestPutMessage(t *testing.T) {
 
 // ensure that both channels get the same message
 func TestPutMessage2Chan(t *testing.T) {
-	/*opts := NewOptions()
+	opts := NewOptions()
 	opts.Logger = test.NewTestLogger(t)
 	_, _, nsqd := mustStartNSQD(opts)
 	defer os.RemoveAll(opts.DataPath)
@@ -53,15 +53,26 @@ func TestPutMessage2Chan(t *testing.T) {
 
 	var id MessageID
 	msg := NewMessage(id, []byte("test"))
+
+	// put message without triggering channel to consume msg
 	topic.PutMessage(msg)
+	topic.backend.WriterFlush()
+	channel1.backend.UpdateBackendQueueEnd(topic.backend.GetQueueReadEnd())
+	channel2.backend.UpdateBackendQueueEnd(topic.backend.GetQueueReadEnd())
 
-	outputMsg1 := <-channel1.memoryMsgChan
-	test.Equal(t, msg.ID, outputMsg1.ID)
-	test.Equal(t, msg.Body, outputMsg1.Body)
+	res1, _ := channel1.tryReadOne()
+	test.NotNil(t, res1)
+	rmsg1, _ := decodeMessage(res1.Data)
+	test.NotNil(t, rmsg1)
+	test.Equal(t, msg.ID, rmsg1.ID)
+	test.Equal(t, msg.Body, rmsg1.Body)
 
-	outputMsg2 := <-channel2.memoryMsgChan
-	test.Equal(t, msg.ID, outputMsg2.ID)
-	test.Equal(t, msg.Body, outputMsg2.Body)*/
+	res2, _ := channel2.tryReadOne()
+	test.NotNil(t, res2)
+	rmsg2, _ := decodeMessage(res2.Data)
+	test.NotNil(t, rmsg2)
+	test.Equal(t, msg.ID, rmsg2.ID)
+	test.Equal(t, msg.Body, rmsg2.Body)
 }
 
 func TestInFlightWorker(t *testing.T) {
