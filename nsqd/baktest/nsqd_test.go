@@ -1,4 +1,4 @@
-package nsqd
+package baktest
 
 import (
 	"encoding/json"
@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/test"
-	"github.com/nsqio/nsq/nsqlookupd"
+	"github.com/chainhelen/dtnsq/internal/http_api"
+	"github.com/chainhelen/dtnsq/internal/test"
+	"github.com/chainhelen/dtnsq/nsqlookupd"
 )
 
 const (

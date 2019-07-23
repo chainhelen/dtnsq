@@ -1,4 +1,4 @@
-package nsqd
+package baktest
 
 import (
 	"bytes"
@@ -17,11 +17,11 @@ import (
 
 	"strings"
 
+	"github.com/chainhelen/dtnsq/internal/http_api"
+	"github.com/chainhelen/dtnsq/internal/test"
+	"github.com/chainhelen/dtnsq/internal/version"
+	"github.com/chainhelen/dtnsq/nsqlookupd"
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/test"
-	"github.com/nsqio/nsq/internal/version"
-	"github.com/nsqio/nsq/nsqlookupd"
 )
 
 type ErrMessage struct {

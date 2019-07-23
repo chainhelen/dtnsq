@@ -339,8 +339,8 @@ func (t *Topic) HandleSyncTopicFromSlave(totalMsgCnt, filenum, fileoffset, virtu
 	if fileoffset > 0 {
 		_, err = readFile.Seek(fileoffset, 0)
 		if err != nil {
-			t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) open %s, seek failed: %s", t.name, curFileName, fileoffset, err)
-			return nil, fmt.Errorf("slavesynctopic (%v) open %s, seek failed: %s", t.name, curFileName, fileoffset, err)
+			t.ctx.nsqd.logf(LOG_ERROR, "slavesynctopic (%v) open %s, seek failed: %d, %s", t.name, curFileName, fileoffset, err)
+			return nil, fmt.Errorf("slavesynctopic (%v) open %s, seek failed: %d, %s", t.name, curFileName, fileoffset, err)
 		}
 	}
 
@@ -460,7 +460,7 @@ func (t *Topic) FlushTopicAndChannels() error {
 	t.Unlock()
 
 	for _, c := range channels {
-		c.Close()
+		c.flush()
 	}
 
 	return nil

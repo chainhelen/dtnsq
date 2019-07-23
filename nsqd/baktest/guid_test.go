@@ -1,4 +1,4 @@
-package nsqd
+package baktest
 
 import (
 	"testing"

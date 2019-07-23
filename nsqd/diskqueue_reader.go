@@ -291,7 +291,7 @@ CheckFileOpen:
 	}
 
 	if msgSize <= 0 || msgSize > MAX_POSSIBLE_MSG_SIZE {
-		err = fmt.Errorf("diskqueuereader (%v): binary.Read msgSize error, %s  msgSize:%d", d.readFrom, msgSize)
+		err = fmt.Errorf("diskqueuereader (%v): binary.Read msgSize error, msgSize:%d", d.readFrom, msgSize)
 		result.Err = err
 		d.ctx.nsqd.logf(LOG_ERROR, err.Error())
 		return nil, false

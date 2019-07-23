@@ -1,4 +1,4 @@
-package nsqd
+package baktest
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nsqio/nsq/internal/test"
+	"github.com/chainhelen/dtnsq/internal/test"
 )
 
 func TestGetTopic(t *testing.T) {

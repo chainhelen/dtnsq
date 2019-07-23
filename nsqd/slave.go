@@ -269,7 +269,7 @@ func (s *Slave) HandleResponse() {
 		select {
 		case res := <-s.resChan:
 			if res.err != nil {
-				if res.err != FlagInconsistentError && res.err != FlagInconsistentError {
+				if res.err != FlagInconsistentError && res.err != StepInconsistentError {
 					s.ctx.nsqd.logf(LOG_ERROR, "slave.HandleReponse error %s", res.err)
 					s.ConnToMaster()
 					continue

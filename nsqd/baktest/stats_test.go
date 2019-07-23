@@ -1,4 +1,4 @@
-package nsqd
+package baktest
 
 import (
 	"encoding/json"
@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chainhelen/dtnsq/internal/http_api"
+	"github.com/chainhelen/dtnsq/internal/test"
 	"github.com/golang/snappy"
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/test"
 )
 
 func TestStats(t *testing.T) {

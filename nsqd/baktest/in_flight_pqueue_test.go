@@ -1,4 +1,4 @@
-package nsqd
+package baktest
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/nsqio/nsq/internal/test"
+	"github.com/chainhelen/dtnsq/internal/test"
 )
 
 func TestPriorityQueue(t *testing.T) {
