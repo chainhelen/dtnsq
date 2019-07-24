@@ -76,49 +76,49 @@ func TestPutMessage2Chan(t *testing.T) {
 }
 
 func TestInFlightWorker(t *testing.T) {
-	/*	count := 250
+	count := 1
 
-		opts := NewOptions()
-		opts.Logger = test.NewTestLogger(t)
-		opts.MsgTimeout = 100 * time.Millisecond
-		opts.QueueScanRefreshInterval = 100 * time.Millisecond
-		_, _, nsqd := mustStartNSQD(opts)
-		defer os.RemoveAll(opts.DataPath)
-		defer nsqd.Exit()
+	opts := NewOptions()
+	opts.Logger = test.NewTestLogger(t)
+	opts.MsgTimeout = 100 * time.Millisecond
+	opts.QueueScanRefreshInterval = 100 * time.Millisecond
+	_, _, nsqd := mustStartNSQD(opts)
+	defer os.RemoveAll(opts.DataPath)
+	// defer nsqd.Exit()
 
-		topicName := "test_in_flight_worker" + strconv.Itoa(int(time.Now().Unix()))
-		topic := nsqd.GetTopic(topicName)
-		channel := topic.GetChannel("channel")
+	topicName := "test_in_flight_worker" + strconv.Itoa(int(time.Now().Unix()))
+	topic := nsqd.GetTopic(topicName)
+	channel := topic.GetChannel("channel")
 
-		for i := 0; i < count; i++ {
-			msg := NewMessage(topic.GenerateID(), []byte("test"))
-			channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
-		}
+	for i := 0; i < count; i++ {
+		msg := NewMessage(topic.GenerateID(), []byte("test"))
+		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
+	}
 
-		channel.Lock()
-		inFlightMsgs := len(channel.inFlightMessages)
-		channel.Unlock()
-		test.Equal(t, count, inFlightMsgs)
+	channel.Lock()
+	inFlightMsgs := len(channel.inFlightMessages)
+	channel.Unlock()
+	test.Equal(t, count, inFlightMsgs)
 
-		channel.inFlightMutex.Lock()
-		inFlightPQMsgs := len(channel.inFlightPQ)
-		channel.inFlightMutex.Unlock()
-		test.Equal(t, count, inFlightPQMsgs)
+	channel.inFlightMutex.Lock()
+	inFlightPQMsgs := len(channel.inFlightPQ)
+	channel.inFlightMutex.Unlock()
+	test.Equal(t, count, inFlightPQMsgs)
 
-		// the in flight worker has a resolution of 100ms so we need to wait
-		// at least that much longer than our msgTimeout (in worst case)
-		time.Sleep(4 * opts.MsgTimeout)
+	// the in flight worker has a resolution of 100ms so we need to wait
+	// at least that much longer than our msgTimeout (in worst case)
+	time.Sleep(4 * opts.MsgTimeout)
 
-		channel.Lock()
-		inFlightMsgs = len(channel.inFlightMessages)
-		channel.Unlock()
-		test.Equal(t, 0, inFlightMsgs)
+	channel.Lock()
+	inFlightMsgs = len(channel.inFlightMessages)
+	channel.Unlock()
+	test.Equal(t, 0, inFlightMsgs)
 
-		channel.inFlightMutex.Lock()
-		inFlightPQMsgs = len(channel.inFlightPQ)
-		channel.inFlightMutex.Unlock()
-		test.Equal(t, 0, inFlightPQMsgs)
-	*/
+	channel.inFlightMutex.Lock()
+	inFlightPQMsgs = len(channel.inFlightPQ)
+	channel.inFlightMutex.Unlock()
+	test.Equal(t, 0, inFlightPQMsgs)
+
 }
 
 func TestChannelEmpty(t *testing.T) {
