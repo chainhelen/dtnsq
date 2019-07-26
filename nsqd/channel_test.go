@@ -122,37 +122,36 @@ func TestInFlightWorker(t *testing.T) {
 }
 
 func TestChannelEmpty(t *testing.T) {
-	/*	opts := NewOptions()
-		opts.Logger = test.NewTestLogger(t)
-		_, _, nsqd := mustStartNSQD(opts)
-		defer os.RemoveAll(opts.DataPath)
-		defer nsqd.Exit()
+	opts := NewOptions()
+	opts.Logger = test.NewTestLogger(t)
+	_, _, nsqd := mustStartNSQD(opts)
+	defer os.RemoveAll(opts.DataPath)
+	defer nsqd.Exit()
 
-		topicName := "test_channel_empty" + strconv.Itoa(int(time.Now().Unix()))
-		topic := nsqd.GetTopic(topicName)
-		channel := topic.GetChannel("channel")
+	topicName := "test_channel_empty" + strconv.Itoa(int(time.Now().Unix()))
+	topic := nsqd.GetTopic(topicName)
+	channel := topic.GetChannel("channel")
 
-		msgs := make([]*Message, 0, 25)
-		for i := 0; i < 25; i++ {
-			msg := NewMessage(topic.GenerateID(), []byte("test"))
-			channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
-			msgs = append(msgs, msg)
-		}
+	msgs := make([]*Message, 0, 25)
+	for i := 0; i < 25; i++ {
+		msg := NewMessage(topic.GenerateID(), []byte("test"))
+		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
+		msgs = append(msgs, msg)
+	}
 
-		channel.RequeueMessage(0, msgs[len(msgs)-1].ID, 100*time.Millisecond)
-		test.Equal(t, 24, len(channel.inFlightMessages))
-		test.Equal(t, 24, len(channel.inFlightPQ))
-		test.Equal(t, 1, len(channel.deferredMessages))
-		test.Equal(t, 1, len(channel.deferredPQ))
+	channel.RequeueMessage(0, msgs[len(msgs)-1].ID, 100*time.Millisecond)
+	test.Equal(t, 24, len(channel.inFlightMessages))
+	test.Equal(t, 24, len(channel.inFlightPQ))
+	test.Equal(t, 1, len(channel.deferredMessages))
+	test.Equal(t, 1, len(channel.deferredPQ))
 
-		channel.Empty()
+	channel.Empty()
 
-		test.Equal(t, 0, len(channel.inFlightMessages))
-		test.Equal(t, 0, len(channel.inFlightPQ))
-		test.Equal(t, 0, len(channel.deferredMessages))
-		test.Equal(t, 0, len(channel.deferredPQ))
-		test.Equal(t, int64(0), channel.Depth())
-	*/
+	test.Equal(t, 0, len(channel.inFlightMessages))
+	test.Equal(t, 0, len(channel.inFlightPQ))
+	test.Equal(t, 0, len(channel.deferredMessages))
+	test.Equal(t, 0, len(channel.deferredPQ))
+	test.Equal(t, int64(0), channel.Depth())
 }
 
 func TestChannelEmptyConsumer(t *testing.T) {
