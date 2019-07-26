@@ -766,6 +766,9 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 
 	dirty := false
 	for {
+		if len(c.clients) == 0 {
+			goto exit
+		}
 		c.inFlightMutex.Lock()
 		msg, _ := c.inFlightPQ.PeekAndShift(t)
 		c.inFlightMutex.Unlock()

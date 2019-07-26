@@ -76,7 +76,7 @@ func TestPutMessage2Chan(t *testing.T) {
 }
 
 func TestInFlightWorker(t *testing.T) {
-	count := 1
+	count := 250
 
 	opts := NewOptions()
 	opts.Logger = test.NewTestLogger(t)
@@ -84,7 +84,7 @@ func TestInFlightWorker(t *testing.T) {
 	opts.QueueScanRefreshInterval = 100 * time.Millisecond
 	_, _, nsqd := mustStartNSQD(opts)
 	defer os.RemoveAll(opts.DataPath)
-	// defer nsqd.Exit()
+	defer nsqd.Exit()
 
 	topicName := "test_in_flight_worker" + strconv.Itoa(int(time.Now().Unix()))
 	topic := nsqd.GetTopic(topicName)
@@ -112,12 +112,12 @@ func TestInFlightWorker(t *testing.T) {
 	channel.Lock()
 	inFlightMsgs = len(channel.inFlightMessages)
 	channel.Unlock()
-	test.Equal(t, 0, inFlightMsgs)
+	test.Equal(t, count, inFlightMsgs)
 
 	channel.inFlightMutex.Lock()
 	inFlightPQMsgs = len(channel.inFlightPQ)
 	channel.inFlightMutex.Unlock()
-	test.Equal(t, 0, inFlightPQMsgs)
+	test.Equal(t, count, inFlightPQMsgs)
 
 }
 
