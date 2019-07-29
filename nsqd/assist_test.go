@@ -1,6 +1,7 @@
 package nsqd
 
 import (
+	"errors"
 	"github.com/chainhelen/dtnsq/internal/test"
 	"github.com/chainhelen/go-dtnsq"
 	"io"
@@ -95,3 +96,22 @@ func readValidate(t *testing.T, conn io.Reader, f int32, d string) []byte {
 	test.Equal(t, d, string(data))
 	return data
 }
+
+type errorBackendQueue struct{}
+
+func (d *errorBackendQueue) Put([]byte) (BackendQueueEnd, error) {
+	return nil, errors.New("never gonna happen")
+}
+func (d *errorBackendQueue) ReadChan() chan []byte                             { return nil }
+func (d *errorBackendQueue) Close() error                                      { return nil }
+func (d *errorBackendQueue) Delete() error                                     { return nil }
+func (d *errorBackendQueue) Depth() int64                                      { return 0 }
+func (d *errorBackendQueue) Empty() error                                      { return nil }
+func (d *errorBackendQueue) ReaderFlush() error                                { return nil }
+func (d *errorBackendQueue) GetQueueReadEnd() BackendQueueEnd                  { return nil }
+func (d *errorBackendQueue) GetQueueCurMemRead() BackendQueueEnd               { return nil }
+func (d *errorBackendQueue) UpdateBackendQueueEnd(BackendQueueEnd)             {}
+func (d *errorBackendQueue) TryReadOne() (*ReadResult, bool)                   { return nil, false }
+func (d *errorBackendQueue) Confirm(start int64, end int64, endCnt int64) bool { return true }
+
+type errorRecoveredBackendQueue struct{ errorBackendQueue }

@@ -80,6 +80,8 @@ type Channel struct {
 	dtPreMessages    map[MessageID]*Message
 	dtPrePQ          dtPrePqueue
 	dtPreMutex       sync.Mutex
+	// There is no need to lock pgSize in the current scenario
+	pqSize int
 
 	waitGroup util.WaitGroupWrapper
 
@@ -218,7 +220,9 @@ func (c *Channel) handleMsg(data ReadResult) error {
 }
 
 func (c *Channel) initPQ() {
-	pqSize := int(math.Max(1, float64(c.ctx.nsqd.getOpts().MemQueueSize)/10))
+	pqSize := int(math.Max(1, float64(c.ctx.nsqd.getOpts().MemQueueSize)))
+
+	c.pqSize = pqSize
 
 	c.inFlightMutex.Lock()
 	c.inFlightMessages = make(map[MessageID]*Message)
@@ -378,6 +382,7 @@ func (c *Channel) IsPaused() bool {
 }
 
 // PutMessage writes a Message to the queue
+/*
 func (c *Channel) PutMessage(m *Message) error {
 	c.RLock()
 	defer c.RUnlock()
@@ -390,12 +395,39 @@ func (c *Channel) PutMessage(m *Message) error {
 	}
 	atomic.AddUint64(&c.messageCount, 1)
 	return nil
+}*/
+
+/*
+type putActionError struct {
+	channel *Channel
 }
 
+func NewPutAction(channel *Channel) *putActionError {
+	return &putActionError{channel: channel}
+}
+
+func (p *putActionError) Error() string {
+	c := p.channel
+	c.RLock()
+	clientLen := len(c.clients)
+	c.RUnlock()
+	return fmt.Sprintf("(%s:%s) put client failed, len(clients) == %d", c.topicName, c.name, clientLen)
+}*/
+
+// TODO SetHealth(nil)
 func (c *Channel) put(m *Message) error {
 	select {
 	case c.clientMsgChan <- m:
+		c.ctx.nsqd.SetHealth(nil)
+		atomic.AddUint64(&c.messageCount, 1)
 	case <-c.exitChan:
+	default:
+		c.RLock()
+		clientLen := len(c.clients)
+		c.RUnlock()
+		err := fmt.Errorf("(%s:%s) put client failed, len(clients) == %d", c.topicName, c.name, clientLen)
+		c.ctx.nsqd.SetHealth(err)
+		return err
 	}
 	return nil
 }
@@ -745,7 +777,9 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 		if err != nil {
 			goto exit
 		}
-		c.put(msg)
+		if err := c.put(msg); err != nil {
+			c.StartDeferredTimeout(msg, c.ctx.nsqd.getOpts().MsgTimeout)
+		}
 	}
 
 exit:
@@ -753,6 +787,29 @@ exit:
 }
 
 func (c *Channel) tryReadOne() (*ReadResult, bool) {
+	c.RLock()
+	clientLen := len(c.clients)
+	c.RUnlock()
+	if clientLen == 0 {
+		return nil, false
+	}
+
+	c.inFlightMutex.Lock()
+	inFlightLen := len(c.inFlightMessages)
+	c.inFlightMutex.Unlock()
+
+	c.deferredMutex.Lock()
+	deferredLen := len(c.deferredMessages)
+	c.deferredMutex.Unlock()
+
+	c.dtPreMutex.Lock()
+	dtPreLen := len(c.dtPreMessages)
+	c.dtPreMutex.Unlock()
+
+	if inFlightLen >= c.pqSize || deferredLen >= c.pqSize || dtPreLen >= c.pqSize {
+		return nil, false
+	}
+
 	return c.backend.TryReadOne()
 }
 
@@ -766,9 +823,13 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 
 	dirty := false
 	for {
-		if len(c.clients) == 0 {
+		c.RLock()
+		clientLen := len(c.clients)
+		c.RUnlock()
+		if clientLen == 0 {
 			goto exit
 		}
+
 		c.inFlightMutex.Lock()
 		msg, _ := c.inFlightPQ.PeekAndShift(t)
 		c.inFlightMutex.Unlock()
@@ -789,7 +850,9 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		if ok {
 			client.TimedOutMessage()
 		}
-		c.put(msg)
+		if err := c.put(msg); err != nil {
+			c.StartInFlightTimeout(msg, msg.clientID, c.ctx.nsqd.getOpts().MsgTimeout)
+		}
 	}
 
 exit:

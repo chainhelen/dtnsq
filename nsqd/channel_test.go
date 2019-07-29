@@ -1,8 +1,12 @@
 package nsqd
 
 import (
+	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,13 +17,19 @@ import (
 func TestPutMessage(t *testing.T) {
 	opts := NewOptions()
 	opts.Logger = test.NewTestLogger(t)
-	_, _, nsqd := mustStartNSQD(opts)
+	tcpAddr, _, nsqd := mustStartNSQD(opts)
 	defer os.RemoveAll(opts.DataPath)
 	defer nsqd.Exit()
+	conn, _ := mustConnectNSQD(tcpAddr)
+	defer conn.Close()
 
 	topicName := "test_put_message" + strconv.Itoa(int(time.Now().Unix()))
 	topic := nsqd.GetTopic(topicName)
 	channel1 := topic.GetChannel("ch")
+	client := newClientV2(0, conn, &context{nsqd})
+	client.SetReadyCount(25)
+	err := channel1.AddClient(client.ID, client)
+	test.Equal(t, err, nil)
 
 	var id MessageID
 	msg := NewMessage(id, []byte("test"))
@@ -42,14 +52,23 @@ func TestPutMessage(t *testing.T) {
 func TestPutMessage2Chan(t *testing.T) {
 	opts := NewOptions()
 	opts.Logger = test.NewTestLogger(t)
-	_, _, nsqd := mustStartNSQD(opts)
+	tcpAddr, _, nsqd := mustStartNSQD(opts)
 	defer os.RemoveAll(opts.DataPath)
 	defer nsqd.Exit()
+	conn, _ := mustConnectNSQD(tcpAddr)
+	defer conn.Close()
 
 	topicName := "test_put_message_2chan" + strconv.Itoa(int(time.Now().Unix()))
 	topic := nsqd.GetTopic(topicName)
 	channel1 := topic.GetChannel("ch1")
 	channel2 := topic.GetChannel("ch2")
+
+	client := newClientV2(0, conn, &context{nsqd})
+	client.SetReadyCount(25)
+	err := channel1.AddClient(client.ID, client)
+	test.Equal(t, err, nil)
+	err = channel2.AddClient(client.ID, client)
+	test.Equal(t, err, nil)
 
 	var id MessageID
 	msg := NewMessage(id, []byte("test"))
@@ -155,114 +174,138 @@ func TestChannelEmpty(t *testing.T) {
 }
 
 func TestChannelEmptyConsumer(t *testing.T) {
-	/*	opts := NewOptions()
-		opts.Logger = test.NewTestLogger(t)
-		tcpAddr, _, nsqd := mustStartNSQD(opts)
-		defer os.RemoveAll(opts.DataPath)
-		defer nsqd.Exit()
-
-		conn, _ := mustConnectNSQD(tcpAddr)
-		defer conn.Close()
-
-		topicName := "test_channel_empty" + strconv.Itoa(int(time.Now().Unix()))
-		topic := nsqd.GetTopic(topicName)
-		channel := topic.GetChannel("channel")
-		client := newClientV2(0, conn, &context{nsqd})
-		client.SetReadyCount(25)
-		err := channel.AddClient(client.ID, client)
-		test.Equal(t, err, nil)
-
-		for i := 0; i < 25; i++ {
-			msg := NewMessage(topic.GenerateID(), []byte("test"))
-			channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
-			client.SendingMessage()
-		}
-
-		for _, cl := range channel.clients {
-			stats := cl.Stats()
-			test.Equal(t, int64(25), stats.InFlightCount)
-		}
-
-		channel.Empty()
-
-		for _, cl := range channel.clients {
-			stats := cl.Stats()
-			test.Equal(t, int64(0), stats.InFlightCount)
-		}
-	*/
-}
-
-func TestMaxChannelConsumers(t *testing.T) {
-	/*	opts := NewOptions()
-		opts.Logger = test.NewTestLogger(t)
-		opts.MaxChannelConsumers = 1
-		tcpAddr, _, nsqd := mustStartNSQD(opts)
-		defer os.RemoveAll(opts.DataPath)
-		defer nsqd.Exit()
-
-		conn, _ := mustConnectNSQD(tcpAddr)
-		defer conn.Close()
-
-		topicName := "test_max_channel_consumers" + strconv.Itoa(int(time.Now().Unix()))
-		topic := nsqd.GetTopic(topicName)
-		channel := topic.GetChannel("channel")
-
-		client1 := newClientV2(1, conn, &context{nsqd})
-		client1.SetReadyCount(25)
-		err := channel.AddClient(client1.ID, client1)
-		test.Equal(t, err, nil)
-
-		client2 := newClientV2(2, conn, &context{nsqd})
-		client2.SetReadyCount(25)
-		err = channel.AddClient(client2.ID, client2)
-		test.NotEqual(t, err, nil)*/
-}
-
-func TestChannelHealth(t *testing.T) {
-	/*opts := NewOptions()
+	opts := NewOptions()
 	opts.Logger = test.NewTestLogger(t)
-	opts.MemQueueSize = 2
-
-	_, httpAddr, nsqd := mustStartNSQD(opts)
+	tcpAddr, _, nsqd := mustStartNSQD(opts)
 	defer os.RemoveAll(opts.DataPath)
 	defer nsqd.Exit()
 
-	topic := nsqd.GetTopic("test")
+	conn, _ := mustConnectNSQD(tcpAddr)
+	defer conn.Close()
 
+	topicName := "test_channel_empty" + strconv.Itoa(int(time.Now().Unix()))
+	topic := nsqd.GetTopic(topicName)
+	channel := topic.GetChannel("channel")
+	client := newClientV2(0, conn, &context{nsqd})
+	client.SetReadyCount(25)
+	err := channel.AddClient(client.ID, client)
+	test.Equal(t, err, nil)
+
+	for i := 0; i < 25; i++ {
+		msg := NewMessage(topic.GenerateID(), []byte("test"))
+		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
+		client.SendingMessage()
+	}
+
+	for _, cl := range channel.clients {
+		stats := cl.Stats()
+		test.Equal(t, int64(25), stats.InFlightCount)
+	}
+
+	channel.Empty()
+
+	for _, cl := range channel.clients {
+		stats := cl.Stats()
+		test.Equal(t, int64(0), stats.InFlightCount)
+	}
+}
+
+func TestMaxChannelConsumers(t *testing.T) {
+	opts := NewOptions()
+	opts.Logger = test.NewTestLogger(t)
+	opts.MaxChannelConsumers = 1
+	tcpAddr, _, nsqd := mustStartNSQD(opts)
+	defer os.RemoveAll(opts.DataPath)
+	defer nsqd.Exit()
+
+	conn, _ := mustConnectNSQD(tcpAddr)
+	defer conn.Close()
+
+	topicName := "test_max_channel_consumers" + strconv.Itoa(int(time.Now().Unix()))
+	topic := nsqd.GetTopic(topicName)
 	channel := topic.GetChannel("channel")
 
-	channel.backend = &errorBackendQueue{}
+	client1 := newClientV2(1, conn, &context{nsqd})
+	client1.SetReadyCount(25)
+	err := channel.AddClient(client1.ID, client1)
+	test.Equal(t, err, nil)
+
+	client2 := newClientV2(2, conn, &context{nsqd})
+	client2.SetReadyCount(25)
+	err = channel.AddClient(client2.ID, client2)
+	test.NotEqual(t, err, nil)
+}
+
+func TestChannelHealth(t *testing.T) {
+	opts := NewOptions()
+	opts.Logger = test.NewTestLogger(t)
+
+	tcpAddr, httpAddr, nsqd := mustStartNSQD(opts)
+	defer os.RemoveAll(opts.DataPath)
+	defer nsqd.Exit()
+
+	conn, _ := mustConnectNSQD(tcpAddr)
+	defer conn.Close()
+
+	topic := nsqd.GetTopic("test")
+	channel := topic.GetChannel("channel")
+	client := newClientV2(0, conn, &context{nsqd})
+	client.SetReadyCount(25)
+	err := channel.AddClient(client.ID, client)
+	test.Equal(t, err, nil)
+
+	sendOverChan := make(chan bool)
+	wg := &sync.WaitGroup{}
+
+	go func() {
+		wg.Add(1)
+		clientMsgChan := channel.clientMsgChan
+		count := 0
+		for {
+			select {
+			case <-clientMsgChan:
+				count++
+				if count == 2 {
+					clientMsgChan = nil
+				}
+			case <-sendOverChan:
+				wg.Done()
+				return
+			}
+		}
+	}()
+	time.Sleep(time.Duration(50) * time.Millisecond)
 
 	msg := NewMessage(topic.GenerateID(), make([]byte, 100))
-	err := channel.PutMessage(msg)
+	err = channel.put(msg)
 	test.Nil(t, err)
-
-	msg = NewMessage(topic.GenerateID(), make([]byte, 100))
-	err = channel.PutMessage(msg)
-	test.Nil(t, err)
-
-	msg = NewMessage(topic.GenerateID(), make([]byte, 100))
-	err = channel.PutMessage(msg)
-	test.NotNil(t, err)
 
 	url := fmt.Sprintf("http://%s/ping", httpAddr)
 	resp, err := http.Get(url)
-	test.Nil(t, err)
-	test.Equal(t, 500, resp.StatusCode)
-	body, _ := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	test.Equal(t, "NOK - never gonna happen", string(body))
-
-	channel.backend = &errorRecoveredBackendQueue{}
-
-	msg = NewMessage(topic.GenerateID(), make([]byte, 100))
-	err = channel.PutMessage(msg)
-	test.Nil(t, err)
 
 	resp, err = http.Get(url)
 	test.Nil(t, err)
 	test.Equal(t, 200, resp.StatusCode)
+	body, _ := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	test.Equal(t, "OK", string(body))
+
+	msg = NewMessage(topic.GenerateID(), make([]byte, 100))
+	err = channel.put(msg)
+	test.Nil(t, err)
+
+	msg = NewMessage(topic.GenerateID(), make([]byte, 100))
+	err = channel.put(msg)
+	test.NotNil(t, err)
+
+	resp, err = http.Get(url)
+	test.Nil(t, err)
+
+	test.Equal(t, 500, resp.StatusCode)
 	body, _ = ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
-	test.Equal(t, "OK", string(body))*/
+	test.Equal(t, "NOK - (test:channel) put client failed, len(clients) == 1", string(body))
+
+	close(sendOverChan)
+	wg.Wait()
 }
